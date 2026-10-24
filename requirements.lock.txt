@@ -1,0 +1,24 @@
+# pip freeze of the production venv (Python 3.13). 本番ビルドの数値は numpy/scipy/glicko2/openskill の版に依存しうるので、
+# 同じ出力を再現するにはこの版を入れる: python3 -m venv .venv && .venv/bin/pip install -r requirements.lock.txt
+certifi==2026.5.20
+charset-normalizer==3.4.7
+choix==0.4.1
+glicko2==2.1.0
+idna==3.16
+joblib==1.5.3
+jpholiday==1.0.3
+numpy==2.4.6
+openskill==6.2.0
+orjson==3.12.0
+pandas==3.0.3
+pillow==12.2.0
+python-dateutil==2.9.0.post0
+reportlab==5.0.0
+requests==2.34.2
+scikit-learn==1.8.0
+scipy==1.17.1
+six==1.17.0
+sortedcontainers==2.4.0
+threadpoolctl==3.6.0
+trueskill==0.4.5
+urllib3==2.7.0

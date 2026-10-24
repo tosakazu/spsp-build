@@ -1,0 +1,301 @@
+# SPSP ランキングのビルドとデプロイを GitHub Actions で行う (2026-09-28 作成)。使い方・Secrets・公開リポジトリでの約束は deploy/ci/README.md。
+#
+# 定時実行は 1 日 5 回、どちらも spsp.games (R2) へ配信する (3・9・15 時は無料枠のためユーザー判断で省略)。
+# 起動は Cloudflare Worker spsp-actions-dispatch (deploy/ci/dispatch-worker) が workflow_dispatch を送る (2026-09-29〜)。
+# GitHub の schedule はこのアカウントでは起動しないので使わない。手動・予備の起動は deploy/ci/trigger.sh:
+#   日本   = 0・6・12・18・21 時 JST。大会データの取得は smash_database の download-japan (3 時間ごと、公開なので無料)
+#            が data-Japan に push したものを使う。
+#   北米   = 0・6・12・18・21 時 (ニューヨーク時間、夏時間基準。冬は 1 時間ずれる)。only_if_changed=true で起動し、
+#            北米担当者がデータを push したときだけビルドする (前回ビルドしたデータのコミットと同じなら数十秒で終わる)。
+#            (2026-09-29 から北米の定期起動は止めている。データが揃うまで)
+# 手で起動するときは入力どおり (only_if_changed を付けなければ、北米もデータが同じかどうかに関係なくビルドする)。
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 地域
+        type: choice
+        options: [jp, na]
+        default: jp
+      deploy:
+        description: 配信先 (none = ビルドだけ、diff = spsp.games と比べて変わるファイルを数えるだけで送らない、r2 = spsp.games)
+        type: choice
+        options: [none, diff, r2]
+        default: none
+      only_if_changed:
+        description: 北米のみ。前回 spsp.games に出したときのデータのコミットと同じなら何もしない (定時起動用)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spsp-build-${{ inputs.region || 'jp' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 鍵は Environment production (main ブランチからだけ使える) に置く。main 以外から起動すると鍵が渡らない
+    environment: production
+    # 公開リポジトリの標準ランナー (4 コア・16 GB)。北米の build のピークは約 10 GB (2026-10-21 計測)。
+    # セルフホストランナーは公開リポジトリには付けない (外の人のコードが手元の機械で走りうるため)
+    runs-on: ubuntu-24.04
+    # GitHub のランナーは 1 回 6 時間まで。北米を最初から学習し直すと Mac で約 2 時間 45 分 (2026-10-21)
+    timeout-minutes: ${{ (inputs.region || 'jp') == 'na' && 360 || 150 }}
+    env:
+      TZ: Asia/Tokyo
+      REGION: ${{ inputs.region || 'jp' }}
+      DEPLOY: ${{ inputs.deploy || 'r2' }}
+      SPSP_R2_TRANSFERS: '32'   # R2 への並列アップロード数 (ConoHa は 8)
+    steps:
+      - name: 使うデータのコミットを決める
+        id: plan
+        run: |
+          if [ "$REGION" = na ]; then branch=data-North_America; else branch=data-Japan; fi
+          sha=$(git ls-remote https://github.com/tosakazu/smash_database.git "refs/heads/$branch" | cut -f1)
+          [ -n "$sha" ] || { echo "::error::smash_database の $branch が見つからない"; exit 1; }
+          echo "$REGION: $branch = $sha (deploy=$DEPLOY, event=$GITHUB_EVENT_NAME)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # 北米の定時起動 (only_if_changed) は、前回 spsp.games に出したときのデータのコミットと同じなら何もしない
+      - name: 北米 - このデータでビルド済みか
+        id: nadone
+        if: env.REGION == 'na' && inputs.only_if_changed
+        uses: actions/cache/restore@v4
+        with:
+          path: .na_built
+          key: spsp-na-built-${{ steps.plan.outputs.sha }}
+          lookup-only: true
+
+      - name: 続けるかどうか
+        id: go
+        run: |
+          if [ "${{ steps.nadone.outputs.cache-hit }}" = true ]; then
+            echo "北米のデータ (${{ steps.plan.outputs.sha }}) は前回ビルド済み。何もしない"; echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 2026-10-15: 北米の取り直しでデータが 8.2 GB・106 万ファイルになり、checkout で No space left on device。
+      # ランナーに入っている使わないツール類を消して空ける (日本はデータが小さいのでやらない)
+      - name: 北米 - ディスクを空ける
+        if: steps.go.outputs.run == 'true' && env.REGION == 'na' && runner.environment == 'github-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/share/swift /usr/local/julia* || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h /
+
+      - name: ビルドのスクリプト (このリポジトリ)
+        if: steps.go.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 大会データ (smash_database の地域ブランチ、上で決めたコミット)
+        if: steps.go.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tosakazu/smash_database
+          # 上で決めたコミットそのもの (読むだけ)。2026-10-08: 取得 (download) と data-Japan への push はこのビルドではやらない
+          # (smash_database の download-japan だけが取得する)。データへの書き込み鍵 (DATA_PUSH_TOKEN) は渡さない
+          ref: ${{ steps.plan.outputs.sha }}
+          path: smash_db_tournament
+          fetch-depth: 1
+          persist-credentials: false
+
+      # ConoHa の smash_db_user と同じ版。ブランチ actions/update-user は GitHub から消えているのでコミットを直接指す。
+      # 取れなくなったら (どこからも参照されないコミットは GitHub が消すことがある) 補完なしで進む (任意の入力)
+      - name: 旧ユーザーデータベース (discriminator の補完だけに使う)
+        if: steps.go.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: tosakazu/smash_database
+          ref: fdfcc2f49841b856450c877505341d5027bdbd49
+          path: smash_db_user
+          fetch-depth: 1
+          sparse-checkout: data/startgg/users.jsonl
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        if: steps.go.outputs.run == 'true'
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock.txt
+
+      - name: venv (本番と同じ版)
+        if: steps.go.outputs.run == 'true'
+        run: python -m venv .venv && .venv/bin/pip install -q -r requirements.lock.txt
+
+      # セルフホスト (北米) はチェックポイントを手元のディスクに残すので出し入れしない
+      - name: 学習のチェックポイントを復元
+        if: steps.go.outputs.run == 'true' && runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/spsp-state/learn
+          key: spsp-learn-${{ env.REGION }}-${{ github.run_id }}
+          restore-keys: spsp-learn-${{ env.REGION }}-
+
+      - name: 大会ファイルの前回分を復元 (日本)
+        if: steps.go.outputs.run == 'true' && env.REGION == 'jp' && runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/spsp-state/tourcache
+          key: spsp-tour-jp-${{ github.run_id }}
+          restore-keys: spsp-tour-jp-
+
+      # snap のキャッシュ (spsp/learner._SnapCache)。点は暦に固定なので、古いデータが変わらなければ前回の点がそのまま当たる。
+      # セルフホスト (北米) は手元のディスクに残るので出し入れしない
+      - name: snap のキャッシュを復元
+        if: steps.go.outputs.run == 'true' && runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/spsp-state/snap_cache
+          key: spsp-snap-${{ env.REGION }}-${{ github.run_id }}
+          restore-keys: spsp-snap-${{ env.REGION }}-
+
+      - name: 前回分・秘密ファイル・rclone を用意
+        if: steps.go.outputs.run == 'true'
+        env:
+          STARTGG_OAUTH_CLIENT_SECRET_CF: ${{ secrets.STARTGG_OAUTH_CLIENT_SECRET_CF }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: bash deploy/ci/prepare.sh "$REGION"
+
+      - name: 日本のビルド (と取得・デプロイ)
+        id: jpbuild
+        if: steps.go.outputs.run == 'true' && env.REGION == 'jp'
+        env:
+          # 2026-10-08: start.gg のトークンは渡さない。参加予定者も smash_database の download-japan が取り、
+          # data-Japan の upcoming_entrants.json をビルドが写す ([2.6/5])
+          # 学習のチェックポイントを 14 日前に置く (毎回学習し直す範囲。ConoHa は 45 日)。それより古い大会が変わった回は
+          # 自動でさらに古いチェックポイントから学習し直すので、結果は同じ
+          SPSP_CK_LAG_DAYS: '14'
+          SPSP_DEPLOY_GHPAGES: '0'   # 旧サイト (gh-pages) は 2026-09-29 に転送ページへ切り替え済
+          SPSP_DEPLOY_R2: ${{ (env.DEPLOY == 'r2' || env.DEPLOY == 'diff') && '1' || '0' }}
+          SPSP_R2_DIFF_ONLY: ${{ env.DEPLOY == 'diff' && '1' || '0' }}
+          SPSP_R2_SYNC_WAIT: '1'
+          # 選手ファイル 30 KB 未満の players/ と history/ を data/views/bundle/ にまとめ、R2 にはまとめなかった人の個別ファイルだけ
+          # 送る (北米と同じ。日本は 2.2 万人のうち約 1.75 万人。2026-10-23 に凍結入力で、まとめても選手ページの組み立て
+          # (player_data.js load)・二つ名の抽選の入力が全員同じことを確認)。ビルドの出力の個別ファイルは消さない (二つ名の道具が読む)
+          SPSP_BUNDLE_SMALL: '1'
+          # 大会ファイルは一度書いたら大会そのもののデータが変わらない限り書き直さない (spsp/tour_cache.py)。
+          # 前回分は actions/cache で ~/spsp-state/tourcache に戻す (無ければ全部作る)
+          # 古い大会のページは全国順位・ポイント・表示名が書いたときのまま (フロントは全順位表に「大会当時のもの」と添える、
+          # spsp-web)。2026-10-23 に凍結入力で 8/23 → 9/6 の 2 回を確認: 使い回した 4,184 件のうち作り直しと違うのは
+          # 821 件で、違う項目はポイント (tjpr_raw) だけ。北米は deploy/ci/build_na.sh が同じことをする
+          SPSP_TOUR_CACHE: '1'
+          # 選手ファイルの書き出しを 2 プロセスで (spsp/output.py、出力は 1 プロセスと同じ。ランナーは 2 コア。北米は 3)。
+          # 2026-10-24 に凍結入力で 1 プロセスと出力一致を確認
+          SPSP_PLAYER_WORKERS: '2'
+        run: |
+          export SPSP_TOUR_CACHE_PREV="$HOME/spsp-state/tourcache"
+          build_dir="$HOME/spsp-state/builds/ci_$(date +%Y%m%d_%H%M)"
+          echo "build_dir=$build_dir" >> "$GITHUB_OUTPUT"   # 二つ名の記録の更新が選手のファイルを読む
+          args=("定期更新 $(date +%F) (GitHub Actions)" --build-dir "$build_dir")
+          args+=(--skip-download)   # 取得は smash_database の download-japan だけ
+          [ "$DEPLOY" != none ] || args+=(--skip-deploy)
+          rc=0; bash deploy/update_and_deploy.sh "${args[@]}" || rc=$?
+          # rc=2 = 失敗したステップを前回分で凌いでデプロイまで済んだ (ConoHa と同じ扱い)
+          [ $rc -eq 0 ] || [ $rc -eq 2 ]
+
+      # 二つ名 (プレイヤーカードの称号) の抽選を記録 (Worker の D1、正本) に足す: spsp-web (公開リポジトリ) の tools/titles/sync_owned.mjs。
+      # 選手のファイルは読むだけで書かない (配信の中身・順番には関係しない)。spsp.games に出した回だけ。
+      # 鍵 TITLE_SYNC_KEY が Secrets に無い間・spsp-web の main にまだ道具が無い間は飛ばす。
+      # 失敗してもビルドは成功のまま (道具は警告だけ出して終了コード 0。記録は次の回が続きから引く)
+      - name: 二つ名の道具 (spsp-web)
+        if: steps.jpbuild.outcome == 'success' && env.DEPLOY == 'r2'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: tosakazu/spsp-web
+          ref: main
+          path: spsp-web
+          fetch-depth: 1
+          sparse-checkout: |
+            site/js
+            tools/titles
+          persist-credentials: false
+
+      - name: 二つ名の記録を更新
+        if: steps.jpbuild.outcome == 'success' && env.DEPLOY == 'r2'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          TITLE_SYNC_KEY: ${{ secrets.TITLE_SYNC_KEY }}
+          BUILD_DIR: ${{ steps.jpbuild.outputs.build_dir }}
+        run: |
+          [ -n "$TITLE_SYNC_KEY" ] || { echo "TITLE_SYNC_KEY が無いので飛ばす"; exit 0; }
+          tool=spsp-web/tools/titles/sync_owned.mjs
+          [ -f "$tool" ] || { echo "spsp-web に $tool が無いので飛ばす"; exit 0; }
+          node "$tool" --players "$BUILD_DIR/players" --prefs "$BUILD_DIR/data/player_prefectures.json" --api https://spsp.games/api --lang ja
+
+      - name: 北米のビルド (とデプロイ)
+        id: nabuild
+        if: steps.go.outputs.run == 'true' && env.REGION == 'na'
+        env:
+          SPSP_DEPLOY_R2: ${{ (env.DEPLOY == 'r2' || env.DEPLOY == 'diff') && '1' || '0' }}
+          SPSP_R2_DIFF_ONLY: ${{ env.DEPLOY == 'diff' && '1' || '0' }}
+          # 区切りは 5000 大会 (2026-10-17 の計測 profile-na: 1 プロセスで 6000 大会と 4 区切りで 1 大会あたりは同じ、
+          # 区切りごとの固定費は大会の読み込み約 75 秒 + 状態の読み込み。1500 だと固定費だけで約 3 時間)。
+          # 10-16 に 25000 で 1 区切り目が 13 時間かかったのは高速化前の版 (20 万人で 1 大会 0.4〜0.5 秒、今は 0.21 秒)
+          SPSP_LEARN_CHUNK: '5000'
+          # 選手ファイル 30 KB 未満の players/ と history/ を data/views/bundle/ にまとめ、R2 にはまとめなかった人の個別ファイルだけ送る
+          # (北米は 20 万人の 8 割が小さく、全学習し直しのたびに数十万件の書き込みになる。2026-10-17)
+          SPSP_BUNDLE_SMALL: '1'
+        run: bash deploy/ci/build_na.sh
+
+      # 時間切れ・中止で止まっても、そこまでの学習 (北米は 1 回 1〜2 時間かかりうる) を次回に使えるよう保存する
+      - name: 学習のチェックポイントを保存
+        if: always() && runner.environment == 'github-hosted' && (steps.jpbuild.outcome == 'success' || steps.jpbuild.outcome == 'failure' || steps.jpbuild.outcome == 'cancelled' || steps.nabuild.outcome == 'success' || steps.nabuild.outcome == 'failure' || steps.nabuild.outcome == 'cancelled')
+        uses: actions/cache/save@v4
+        with:
+          path: ~/spsp-state/learn
+          key: spsp-learn-${{ env.REGION }}-${{ github.run_id }}
+
+      # 今回の大会ファイルと一覧を次の回の前回分にする (一覧が無い = 途中で落ちた回は保存しない)
+      - name: 大会ファイルを次の回のために用意 (日本)
+        id: tourprep
+        if: steps.jpbuild.outcome == 'success' && runner.environment == 'github-hosted'
+        env:
+          BUILD_DIR: ${{ steps.jpbuild.outputs.build_dir }}
+        run: |
+          if [ -f "$BUILD_DIR/_tourcache.json.gz" ] && [ -d "$BUILD_DIR/tournaments" ]; then
+            rm -rf ~/spsp-state/tourcache && mkdir -p ~/spsp-state/tourcache
+            cp -al "$BUILD_DIR/tournaments" ~/spsp-state/tourcache/tournaments
+            cp -p "$BUILD_DIR/_tourcache.json.gz" ~/spsp-state/tourcache/
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 大会ファイルを保存 (日本)
+        if: steps.tourprep.outputs.ok == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/spsp-state/tourcache
+          key: spsp-tour-jp-${{ github.run_id }}
+
+      - name: snap のキャッシュを保存
+        if: always() && runner.environment == 'github-hosted' && (steps.jpbuild.outcome == 'success' || steps.jpbuild.outcome == 'failure' || steps.nabuild.outcome == 'success' || steps.nabuild.outcome == 'failure')
+        uses: actions/cache/save@v4
+        with:
+          path: ~/spsp-state/snap_cache
+          key: spsp-snap-${{ env.REGION }}-${{ github.run_id }}
+
+      # 北米を spsp.games に出せたら、そのデータのコミットを「ビルド済み」として記録する (次の定時実行はこれを見て飛ばす)
+      - name: 北米 - ビルド済みを記録
+        if: steps.nabuild.outcome == 'success' && env.DEPLOY == 'r2'
+        run: echo "${{ steps.plan.outputs.sha }}" > .na_built
+      - name: 北米 - ビルド済みを保存
+        if: steps.nabuild.outcome == 'success' && env.DEPLOY == 'r2'
+        uses: actions/cache/save@v4
+        with:
+          path: .na_built
+          key: spsp-na-built-${{ steps.plan.outputs.sha }}

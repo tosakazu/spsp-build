@@ -1,0 +1,13 @@
+# deploy/ci/dispatch-worker — 定時に GitHub Actions を起動する Worker (worker.js 冒頭を参照)。
+# デプロイ: (cd deploy/ci/dispatch-worker && wrangler deploy)。鍵: wrangler secret put JP_ACTIONS_DISPATCH_TOKEN
+name = "spsp-actions-dispatch"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+
+[triggers]
+crons = ["3 */3 * * *", "20 3,9,12,15,21 * * *"]
+
+[observability]
+enabled = true

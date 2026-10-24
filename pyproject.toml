@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spsp"
+version = "0.1.0"
+description = "SPSP ランキングの本番計算 (spsp パッケージ)"
+requires-python = ">=3.11"
+# 依存の版は requirements.lock.txt が正 (本番と同じ出力にはロック側を使う)
+dependencies = []
+
+[tool.setuptools]
+packages = ["spsp", "spsp.cli", "spsp.raters"]
+
+# 開発用: `pip install -e .` すると sys.path の細工なしで `import spsp` できる。
+# ただし本番 venv (.venv) には editable install しない: golden 比較や別 worktree はコードをコピーして走らせるので、
+# editable install があるとコピー先ではなく本番ツリーの spsp を読んでしまう。入口の sys.path 1 行はそのために残している。

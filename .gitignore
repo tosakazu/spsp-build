@@ -1,0 +1,32 @@
+# Python
+.venv
+.venv/
+**/__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.claude/
+
+# 大会データ (別リポジトリ smash_database、数 GB)
+smash_db_tournament
+smash_db_tournament/
+smash_db_user/
+
+# 秘密 (コミットしない)
+.env
+*.token
+STARTGG_TOKEN
+.startgg_token
+
+# ビルドの出力・取り込み結果
+data/
+site/
+# build/data/ は定義ファイルだけ追跡する (取り込み結果 char_votes*.json などは無視)
+!build/data/
+build/data/*
+!build/data/legacy_tournament_order.json
+!build/data/awaiting_resume.json

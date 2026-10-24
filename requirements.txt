@@ -1,0 +1,18 @@
+# 直接依存 (版は requirements.lock.txt に固定。本番と同じ出力にはロック側を使う)
+numpy
+scipy
+pandas
+scikit-learn
+orjson
+openskill
+glicko2
+trueskill
+choix
+jpholiday
+joblib
+sortedcontainers
+requests
+pillow
+reportlab
+
+# 開発・分析用 (図の生成)。本番には不要: .venv/bin/pip install -r requirements-dev.txt
