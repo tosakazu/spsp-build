@@ -65,7 +65,7 @@ CK_DIR=${SPSP_NA_LEARN_DIR:-$SPSP_STATE_ROOT/learn}
 mkdir -p "$CK_DIR"
 # チェックポイントは新しい 2 つだけ残す (2026-10-16: 選手 19 万人で 1 つ数 GB。学習の最後だけで消していたら、
 # 区切りごとに溜まって Mac の VM のディスクが埋まった)
-prune_ck() { ls -1 "$CK_DIR"/na_state_????-??-??.pkl 2>/dev/null | sort -r | tail -n +3 | xargs -r rm -f; }
+prune_ck() { { ls -1 "$CK_DIR"/na_state_????-??-??.pkl 2>/dev/null || true; } | sort -r | tail -n +3 | xargs -r rm -f; }   # 無いとき (初回) の ls の失敗で pipefail に落とされない
 learn_from() {   # learn_from <再開元 state (空 = 最初から)> : eval-date まで 1 プロセスで学習し、その日付より後の区切りごとに保存する
   local sin=$1 d="" cuts=()
   [ -n "$sin" ] && { d=$(basename "$sin" .pkl); d=${d#na_state_}; }
