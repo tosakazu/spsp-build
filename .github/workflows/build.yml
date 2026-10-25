@@ -28,6 +28,10 @@ on:
         description: 北米のみ。前回 spsp.games に出したときのデータのコミットと同じなら何もしない (定時起動用)
         type: boolean
         default: false
+      data_ref:
+        description: 検証用。使う大会データのコミット (smash_database の 40 桁の SHA)。空なら地域ブランチの先頭。deploy=r2 とは一緒に使えない
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -53,9 +57,18 @@ jobs:
     steps:
       - name: 使うデータのコミットを決める
         id: plan
+        env:
+          DATA_REF: ${{ inputs.data_ref }}
         run: |
           if [ "$REGION" = na ]; then branch=data-North_America; else branch=data-Japan; fi
-          sha=$(git ls-remote https://github.com/tosakazu/smash_database.git "refs/heads/$branch" | cut -f1)
+          if [ -n "$DATA_REF" ]; then
+            # 検証用 (配信中のものと同じデータで比べるとき)。古いデータを配信しないよう r2 とは一緒に使わせない
+            [[ "$DATA_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::data_ref は 40 桁の SHA"; exit 1; }
+            [ "$DEPLOY" != r2 ] || { echo "::error::data_ref は deploy=none / diff のときだけ"; exit 1; }
+            sha=$DATA_REF
+          else
+            sha=$(git ls-remote https://github.com/tosakazu/smash_database.git "refs/heads/$branch" | cut -f1)
+          fi
           [ -n "$sha" ] || { echo "::error::smash_database の $branch が見つからない"; exit 1; }
           echo "$REGION: $branch = $sha (deploy=$DEPLOY, event=$GITHUB_EVENT_NAME)"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
