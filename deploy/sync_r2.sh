@@ -45,13 +45,21 @@ COMMON=(--checksum --fast-list --transfers "$TRANSFERS" --checkers "$TRANSFERS" 
 # 同じ = 送らない / 変更・追加 = 送る / 削除 = 配信側にだけあるので sync で消える。data/ と一覧は変わったファイル名も出す。
 if [ "${SPSP_R2_DIFF_ONLY:-0}" = 1 ]; then
   TMPD=$(mktemp -d)
-  diff_part() {   # diff_part <表示名> <src> <dst> [rclone のフィルタ…]
-    local label=$1 src=$2 dst=$3; shift 3
+  : > "$TMPD/changed"
+  diff_part() {   # diff_part <表示名> <src> <dst> <SRC からの道筋 (直下なら空)> [rclone のフィルタ…]
+    local label=$1 src=$2 dst=$3 rel=$4; shift 4
     [ -e "$src" ] || return 0
     "$RCLONE" check "$src" "$dst" --checksum --fast-list --s3-no-check-bucket --combined "$TMPD/c" "$@" >/dev/null 2>&1 || true
     printf '  %-26s 同じ %6d / 変更 %6d / 追加 %6d / 削除 %6d\n' "$label" \
       "$(grep -c '^=' "$TMPD/c" || true)" "$(grep -c '^\*' "$TMPD/c" || true)" "$(grep -c '^+' "$TMPD/c" || true)" "$(grep -c '^-' "$TMPD/c" || true)"
     case "$label" in players/*|tournaments/*|history/*) ;; *) grep -E '^[*+-]' "$TMPD/c" | head -12 | sed 's/^/      /' ;; esac
+    # 変わったファイルは全部 R2 から落として、最後に compare_live.py で値ごとに比べる (下)
+    grep '^\* ' "$TMPD/c" | cut -c3- > "$TMPD/c_files" || true
+    if [ -s "$TMPD/c_files" ]; then
+      "$RCLONE" copy "$dst" "$TMPD/live/$rel" --files-from "$TMPD/c_files" --fast-list --s3-no-check-bucket --transfers "$TRANSFERS" --checkers "$TRANSFERS" >/dev/null 2>&1 \
+        || echo "      WARN: 配信中のファイルを一部落とせなかった (下の比較で「読めない」と出る)"
+      sed "s#^#${rel:+$rel/}#" "$TMPD/c_files" >> "$TMPD/changed"
+    fi
     # 変更の例 (先頭 2 件) について、値が違う場所を出す (何が変わるのかを見るため)
     grep '^\* ' "$TMPD/c" | head -2 | cut -c3- | while read -r f; do
       "$RCLONE" cat "$dst/$f" > "$TMPD/old" 2>/dev/null || continue
@@ -62,13 +70,15 @@ if [ "${SPSP_R2_DIFF_ONLY:-0}" = 1 ]; then
   echo "差分 (送らない): $SRC と $DEST/"
   for d in players tournaments history; do
     if [ "$d" != tournaments ] && [ -f "$SRC/_unbundled_players.txt" ]; then
-      diff_part "$d/" "$SRC/$d" "$DEST/$d" --files-from "$SRC/_unbundled_players.txt"
+      diff_part "$d/" "$SRC/$d" "$DEST/$d" "$d" --files-from "$SRC/_unbundled_players.txt"
     else
-      diff_part "$d/" "$SRC/$d" "$DEST/$d" --include '*.json'
+      diff_part "$d/" "$SRC/$d" "$DEST/$d" "$d" --include '*.json'
     fi
   done
-  diff_part "data/" "$SRC/data" "$DEST/data" --include '*.json'
-  diff_part "一覧・meta (直下)" "$SRC" "$DEST" --max-depth 1 --include 'latest_*.jsonl' --include players_current.json --include meta.json
+  diff_part "data/" "$SRC/data" "$DEST/data" data --include '*.json'
+  diff_part "一覧・meta (直下)" "$SRC" "$DEST" "" --max-depth 1 --include 'latest_*.jsonl' --include players_current.json --include meta.json
+  echo "変わったファイルを全部、値ごとに比べる (deploy/compare_live.py):"
+  "${PY:-python3}" "$(dirname "$0")/compare_live.py" "$TMPD/live" "$SRC" "$TMPD/changed" 2>&1 || echo "  WARN: compare_live.py が失敗した"
   rm -rf "$TMPD"
   echo "[$(date '+%F %T')] diff only (何も送っていない)"
   exit 0
