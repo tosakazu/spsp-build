@@ -9,6 +9,12 @@ R2 の置き方 (中身で重複をまとめる。シリーズ大会は同じ画
   r2:spsp-data/images/tournament/index.json         対応表 {"<大会 ID>": {"file": "h/<MD5>.<拡張子>", "src": "<start.gg のファイル名>"}}
 公開 URL は https://data.spsp.games/images/tournament/<file>。フロントは index.json で大会 ID から引く。
 
+一覧に並べる用の縮小版 (2026-10-27〜。元画像は平均 200 KB あり、40px で並べるには重い):
+  r2:spsp-data/images/tournament/t/<MD5>.webp       長い辺 THUMB_PX の WebP。h/ と同じ MD5 (元画像の中身) の名前。immutable
+  r2:spsp-data/images/tournament/events.json        部門 ID → 縮小版 {"v":1,"files":["t/<MD5>.webp",…],"e":{"<部門 ID>":<files の位置>}}
+  プレイヤーのデータは部門 ID しか持たないので、部門 ID で引ける表にする (大会 ID → 部門は smash_database の tournaments.jsonl)。
+  縮小版が無い元画像は毎回作る (初回は全部。--thumb-limit で 1 回の数を絞れる)。表は毎回書き直す。
+
 - 取り直すのは、対応表に無い大会と、start.gg のファイル名 (src) が変わった大会 (= 主催者が差し替えた) だけ。
   アイコンが消えた大会は対応表から外す。対応表は画像を送り終えてから書く (指す先が無い行を作らない)。
 - 使われなくなった画像は消さない。
@@ -41,6 +47,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INDEX = ROOT / 'smash_db_tournament/data/startgg/Japan/tournament_images.jsonl'
 DEFAULT_DEST = f"r2:{os.environ.get('R2_BUCKET', 'spsp-data')}/images/tournament"
 MANIFEST = 'index.json'
+EVENTS = 'events.json'
+THUMB_PX = 96    # 表示は 40〜48px。高解像度の画面で 2 倍
 BATCH = 200   # この件数ごとに R2 へ送り、対応表を書く (途中で止まっても送った分は残る)
 
 
@@ -114,6 +122,105 @@ def write_manifest(manifest: dict, dest: str, tmp: Path) -> None:
         raise SystemExit(f"ERROR: 対応表を書けない (rc={p.returncode})")
 
 
+def thumb_of(file: str) -> str:
+    """h/<MD5>.<ext> → t/<MD5>.webp"""
+    return 't/' + os.path.splitext(file[2:])[0] + '.webp'
+
+
+def make_thumb(body: bytes) -> bytes:
+    from PIL import Image   # 縮小版を作るときだけ (requirements にある)
+    import io
+    with Image.open(io.BytesIO(body)) as im:
+        im.seek(0)   # アニメーション GIF は最初のコマ
+        im = im.convert('RGBA')
+        im.thumbnail((THUMB_PX, THUMB_PX), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, 'WEBP', quality=82, method=4)
+        return out.getvalue()
+
+
+def list_dir(dest: str, sub: str) -> set[str]:
+    p = rclone(['lsf', '--files-only', f'{dest}/{sub}'], capture_output=True, text=True)
+    if p.returncode != 0:
+        if 'not found' in p.stderr.lower() or 'directory not found' in p.stderr.lower():
+            return set()
+        raise SystemExit(f"ERROR: rclone lsf {dest}/{sub} に失敗: {p.stderr.strip()[:300]}")
+    return {f"{sub}/{l.strip()}" for l in p.stdout.splitlines() if l.strip()}
+
+
+def sync_thumbs(manifest: dict, dest: str, limit: int | None) -> int:
+    """縮小版が無い元画像を R2 から落として縮小版を置く。置いた数を返す。失敗した画像は飛ばす (次回また)。"""
+    have = list_dir(dest, 't')
+    todo = sorted({row['file'] for row in manifest.values() if thumb_of(row['file']) not in have})
+    if limit is not None:
+        todo = todo[:limit]
+    made, bad = 0, 0
+    for i in range(0, len(todo), BATCH):
+        batch = todo[i:i + BATCH]
+        with tempfile.TemporaryDirectory(prefix='spsp_thumb_') as tmp:
+            tmp = Path(tmp)
+            (tmp / 'list').write_text(''.join(f[2:] + '\n' for f in batch), encoding='utf-8')
+            p = rclone(['copy', f'{dest}/h', str(tmp / 'h'), '--files-from', str(tmp / 'list'), '--s3-no-check-bucket',
+                        '--transfers', '8'])
+            if p.returncode != 0:
+                print(f"WARN: 元画像を落とせない (rc={p.returncode}) — 縮小版は次回", file=sys.stderr)
+                return made
+            (tmp / 't').mkdir()
+            for f in batch:
+                src = tmp / f
+                try:
+                    (tmp / thumb_of(f)).write_bytes(make_thumb(src.read_bytes()))
+                except Exception as e:   # 壊れた画像・対応外の形式
+                    bad += 1
+                    print(f"  縮小版を作れない {f}: {type(e).__name__}")
+            n = sum(1 for _ in (tmp / 't').iterdir())
+            if n:
+                p = rclone(['copy', str(tmp / 't'), f'{dest}/t', '--s3-no-check-bucket', '--transfers', '8',
+                            '--header-upload', 'Cache-Control: public, max-age=31536000, immutable',
+                            '--header-upload', 'Content-Type: image/webp'])
+                if p.returncode != 0:
+                    print(f"WARN: 縮小版を送れない (rc={p.returncode})", file=sys.stderr)
+                    return made
+            made += n
+        print(f"[images] 縮小版 {min(i + BATCH, len(todo))}/{len(todo)} (作った {made}、作れない {bad})", flush=True)
+    return made
+
+
+def write_events(manifest: dict, tournaments: Path, dest: str) -> None:
+    """部門 ID → 縮小版の表 (縮小版がある大会だけ)。"""
+    if not tournaments.exists():
+        print(f"[images] {tournaments} が無い — 部門の表は書かない")
+        return
+    have = list_dir(dest, 't')
+    files: list[str] = []
+    pos: dict[str, int] = {}
+    ev: dict[str, int] = {}
+    with open(tournaments, encoding='utf-8') as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            row = manifest.get(str(rec.get('tournament_id')))
+            if not row or thumb_of(row['file']) not in have:
+                continue
+            t = thumb_of(row['file'])
+            if t not in pos:
+                pos[t] = len(files)
+                files.append(t)
+            for e in rec.get('events') or []:
+                if e.get('event_id') is not None:
+                    ev[str(e['event_id'])] = pos[t]
+    with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
+        out = Path(tmp) / EVENTS
+        out.write_text(json.dumps({'v': 1, 'files': files, 'e': dict(sorted(ev.items(), key=lambda kv: int(kv[0])))},
+                                  separators=(',', ':')), encoding='utf-8')
+        p = rclone(['copyto', str(out), f'{dest}/{EVENTS}', '--s3-no-check-bucket',
+                    '--header-upload', 'Cache-Control: public, max-age=300', '--header-upload', 'Content-Type: application/json'])
+        if p.returncode != 0:
+            raise SystemExit(f"ERROR: 部門の表を書けない (rc={p.returncode})")
+    print(f"[images] 部門の表: {len(ev)} 部門 / 縮小版 {len(files)} 枚")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--index', type=Path, default=DEFAULT_INDEX)
@@ -121,6 +228,8 @@ def main() -> int:
     ap.add_argument('--limit', type=int, default=None, help='今回取る最大件数')
     ap.add_argument('--workers', type=int, default=int(os.environ.get('SPSP_IMG_WORKERS', '4')))
     ap.add_argument('--dry-run', action='store_true', help='取る件数を数えるだけ')
+    ap.add_argument('--thumb-limit', type=int, default=None, help='今回作る縮小版の最大数 (初回の一括作成を分けるとき)')
+    ap.add_argument('--tournaments', type=Path, default=None, help='大会 → 部門 (既定: --index と同じ場所の tournaments.jsonl)')
     args = ap.parse_args()
 
     if not args.index.exists():
@@ -144,7 +253,7 @@ def main() -> int:
         if removed:
             with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
                 write_manifest(manifest, args.dest, Path(tmp))
-        return 0
+        return finish(manifest, args)
 
     have = list_hashed(args.dest)
     uploaded, reused, failed = 0, 0, []
@@ -187,6 +296,13 @@ def main() -> int:
     print(f"[images] 完了: 新しい画像 {uploaded} 枚、既にある画像を使った {reused} 大会、失敗 {len(failed)} 件")
     for tid, url, r in failed[:20]:
         print(f"  失敗 {tid} {r} {url}")
+    return finish(manifest, args)
+
+
+def finish(manifest: dict, args) -> int:
+    """縮小版と部門の表 (元画像を送り終えてから)。"""
+    sync_thumbs(manifest, args.dest, args.thumb_limit)
+    write_events(manifest, args.tournaments or args.index.with_name('tournaments.jsonl'), args.dest)
     return 0
 
 
