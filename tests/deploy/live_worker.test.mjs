@@ -226,3 +226,21 @@ test("bracketLabels: ビルドと同じブラケットの位置 (フェーズを
   assert.equal(at(600), "総当たり");
   assert.deepEqual([1, 2, 3, 4, 5, 7, 9, 13, 25, 49, 289].map(placementBucket), [1, 2, 3, 4, 6, 8, 12, 16, 32, 64, 384]);
 });
+
+test("bracketLabels: 本戦のフェーズは人数の多い順につなぐ (phaseOrder が TOP8 → TOP96 でも)", () => {
+  const sets = (pg, counts) => Object.entries(counts).flatMap(([r, n]) =>
+    Array.from({ length: n }, (_, i) => ({ id: `${pg}-${r}-${i}`, pg, round: Number(r), e: [1, 2], winner: null, bye: false })));
+  const doc = {
+    phases: [
+      { id: 1, name: "Bracket", order: 1, type: "DOUBLE_ELIMINATION", seeds: 256, groups: [{ id: 11 }] },
+      { id: 2, name: "TOP8", order: 2, type: "DOUBLE_ELIMINATION", seeds: 8, groups: [{ id: 21 }] },
+      { id: 3, name: "TOP96", order: 3, type: "DOUBLE_ELIMINATION", seeds: 96, groups: [{ id: 31 }] },
+    ],
+    entrants: {},
+    sets: [...sets(11, { 1: 128, 2: 64, 3: 32 }), ...sets(21, { 1: 2, 2: 1, 3: 1 }), ...sets(31, { 1: 16, 2: 8, 3: 4 })],
+  };
+  bracketLabels(doc);
+  const at = (id) => doc.sets.find((s) => s.id === id).label;
+  assert.equal(at("31-1-0"), "Winners TOP 32");
+  assert.equal(at("21-1-0"), "Winners TOP 4");
+});

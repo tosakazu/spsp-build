@@ -319,11 +319,15 @@ export function bracketLabels(doc) {
     if (!classLetter(p.name)) mainSeeds = Math.max(mainSeeds, p.seeds || 0);
     if (!isBracket(p.type) || s.bye || !(s.round > 0)) continue;
     let i = info.get(p.id);
-    if (!i) info.set(p.id, (i = { order: p.order || 0, counts: {}, se: p.type === "SINGLE_ELIMINATION", letter: classLetter(p.name) }));
+    if (!i) info.set(p.id, (i = { order: p.order || 0, seeds: p.seeds || 0, counts: {}, se: p.type === "SINGLE_ELIMINATION", letter: classLetter(p.name) }));
     i.counts[s.round] = (i.counts[s.round] || 0) + 1;
   }
   let cumulative = 0;
-  for (const [, i] of [...info.entries()].sort((a, b) => a[1].order - b[1].order || a[0] - b[0])) {
+  // 本戦のフェーズは進む順 = 人数 (numSeeds) の多い順につなぐ。phaseOrder は作った順で、進む順とは限らない (TOP8 が TOP96 より前など)。
+  // 本戦のフェーズに人数の分からないものがあれば phaseOrder のまま (smash_database の _phase_progress_key と同じ)
+  const bySize = [...info.values()].every((i) => i.letter || i.seeds > 0);
+  const key = (/** @type {any} */ i) => (bySize && !i.letter ? -i.seeds : 0);
+  for (const [, i] of [...info.entries()].sort((a, b) => key(a[1]) - key(b[1]) || a[1].order - b[1].order || a[0] - b[0])) {
     const rounds = Object.keys(i.counts).map(Number).sort((a, b) => a - b);
     i.playIn = new Set();
     for (let k = 0; k < rounds.length - 1; k++) {   // 次のラウンドのちょうど 2 倍でない先頭のラウンドはプレイイン
