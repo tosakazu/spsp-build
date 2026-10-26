@@ -60,3 +60,11 @@ CLI からは `gh workflow run build -R tosakazu/spsp-build -f region=jp -f depl
   自動でさらに古いチェックポイント (月初・年末) から学習し直す。結果は同じで、時間が長い回があるだけ。
 - 海外タグは smash_database の overseas_status.json と前回のランキング (1 ファイル) から作るので、前回の選手ページは取らない。
 - 実行時間の目安は日本の通常回で 5〜10 分。公開リポジトリの標準ランナーは無料。
+
+## 開催中の大会の速報 (deploy/live-worker、Actions ではない)
+
+Cloudflare Worker `spsp-live` が 1 分ごとに start.gg から開催中の部門を取り、R2 の `live/jp/` に書く (中身は `deploy/live-worker/live.js` の冒頭)。
+ビルドとは別の経路で、ここの workflow は関わらない。R2 の同期 (`deploy/sync_r2.sh`) は `<地域>/` の下だけなので `live/` は消さない。
+デプロイは `(cd deploy/live-worker && wrangler deploy)`、鍵は `wrangler secret put STARTGG_TOKEN` (速報専用の start.gg トークン)。
+`data.spsp.games/live/` は Cloudflare のキャッシュルールで Worker の Cache-Control (30 秒) のまま配る (ほかのパスは 5 分 / 1 日に上書きされる)。
+手元で 1 回分: `STARTGG_TOKEN_FILE=… node deploy/live-worker/run_local.mjs <出力ディレクトリ> [国コード]`。試験: `bash tests/run_all.sh deploy`。

@@ -28,6 +28,12 @@ if [[ "$WHAT" == all || "$WHAT" == deploy ]]; then
     n=$((n+1))
     if out=$(bash "$t" 2>&1); then echo "  ok   $t"; else echo "  FAIL $t"; echo "$out" | grep -v '^      ' | tail -8 | sed 's/^/       /'; fail=$((fail+1)); fi
   done
+  # 速報の Worker (deploy/live-worker/live.js)。node が無ければ飛ばす
+  for t in tests/deploy/*.test.mjs; do
+    if ! command -v node >/dev/null; then echo "  skip $t (node が無い)"; continue; fi
+    n=$((n+1))
+    if out=$(node --test --test-concurrency=1 "$t" 2>&1); then echo "  ok   $t"; else echo "  FAIL $t"; echo "$out" | grep -E '^not ok|✖|Error' | head -8 | sed 's/^/       /'; fail=$((fail+1)); fi
+  done
 fi
 
 echo "── $((n-fail))/$n ok ──"
