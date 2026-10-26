@@ -18,8 +18,11 @@
 // 順位: entrants[].placement / final は start.gg の standings (final = isFinal)。まだ残っている参加者には、トーナメント
 // (ELIMINATION) なら place_min = 残り人数から決まる「最悪でもこの順位」(1,2,3,4,5,7,9,13,17,25,… の区切り) を付ける。
 // 例: 残り 12 人なら 9 (= 9 位以上)。
+//
+// セットの label はビルドの試合と同じ「ブラケットの位置」(Winners TOP 64 / Losers TOP 12 / Grand Final / B-Winners TOP 8 / 総当たり …)。
+// 計算は smash_database の redownload_matches_v2.compute_global_top_x と同じ (bracketLabels)。
 
-export const DOC_VERSION = 1;
+export const DOC_VERSION = 2;   // 2: セットに label (ブラケットの位置)・bye、フェーズに seeds
 export const GAME_ID = 1386;
 export const LOWER_CLASS_NAME_PAT = /[BCDEＢＣＤＥ]\s*クラス|(?<![A-Za-z])[BCDE][\s_\-]*class(?![A-Za-z])/i;
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
@@ -46,7 +49,7 @@ const LIST_QUERY = `query LiveTournaments($gameId: ID!, $cc: String!, $before: T
 const PHASES_QUERY = `query LivePhases($eid: ID!) {
   event(id: $eid) {
     phases {
-      id name phaseOrder bracketType state
+      id name phaseOrder bracketType state numSeeds
       phaseGroups(query: {page: 1, perPage: 256}) { nodes { id displayIdentifier state bracketUrl } }
     }
   }
@@ -68,7 +71,7 @@ const SETS_QUERY = `query LiveSets($eid: ID!, $after: Timestamp, $page: Int!, $p
       nodes {
         id state round fullRoundText identifier winnerId startedAt completedAt updatedAt totalGames
         phaseGroup { id }
-        slots { entrant { id } standing { stats { score { value } } } }
+        slots { prereqType entrant { id } standing { stats { score { value } } } }
         games { orderNum winnerId selections { entrant { id } character { id } } }
       }
     }
@@ -196,7 +199,7 @@ async function fetchPhases(gql, eid) {
   return [...(ev.phases || [])]
     .sort((a, b) => (a.phaseOrder || 0) - (b.phaseOrder || 0) || a.id - b.id)
     .map((p) => ({
-      id: p.id, name: p.name, order: p.phaseOrder, type: p.bracketType, state: p.state, cls: LOWER_CLASS_NAME_PAT.test(p.name || ""),
+      id: p.id, name: p.name, order: p.phaseOrder, type: p.bracketType, state: p.state, seeds: p.numSeeds ?? null, cls: LOWER_CLASS_NAME_PAT.test(p.name || ""),
       groups: (p.phaseGroups?.nodes || []).map((g) => ({ id: g.id, ident: g.displayIdentifier, state: g.state, url: g.bracketUrl })),
     }));
 }
@@ -224,7 +227,7 @@ export function setRecord(s) {
     ident: s.identifier ?? null, state: s.state ?? null,
     e: slots.map((sl) => sl?.entrant?.id ?? null),
     score: slots.map((sl) => sl?.standing?.stats?.score?.value ?? null),
-    winner: s.winnerId ?? null, best_of: s.totalGames ?? null,
+    winner: s.winnerId ?? null, best_of: s.totalGames ?? null, bye: slots.some((sl) => sl?.prereqType === "bye"),
     started_at: s.startedAt ?? null, completed_at: s.completedAt ?? null, updated_at: s.updatedAt ?? null,
     games: games.length ? games : null,
   };
@@ -267,11 +270,113 @@ export function applyStandings(doc, standings) {
   }
   const worst = elim ? worstPlacement(alive) : null;
   for (const e of Object.values(doc.entrants || {})) e.place_min = e.final || e.in_class ? null : worst;
+  bracketLabels(doc);   // 敗者側のラベルは負けた人の順位から決まる
+}
+
+// ---- ブラケットの位置 (smash_database scripts/common/redownload_matches_v2.py の移植。数え方を変えるときは両方) ----
+const CLASS_PHASE_RE = /\b[B-E][- ]?class\b|[B-EＢＣＤＥ][- ]?クラス/i;
+const BT_LABEL = { ROUND_ROBIN: "総当たり", SWISS: "スイスドロー", MATCHMAKING: "レート戦" };
+const isBracket = (type) => !type || type === "DOUBLE_ELIMINATION" || type === "SINGLE_ELIMINATION";
+
+function classLetter(name) {
+  const m = (name || "").match(CLASS_PHASE_RE);
+  return m ? m[0][0].replace(/[ＡＢＣＤＥ]/, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).toUpperCase() : null;
+}
+// プレイインを除いた実質の大きさ (2 の累乗ならそのまま、そうでなければ下の 2 の累乗)
+function capacityOf(n) {
+  if (!(n > 1)) return 1;
+  let p = 1;
+  while (p < n) p *= 2;
+  return p === n ? n : p / 2;
+}
+// 順位の区切りの上端 1,2,3,4,6,8,12,16,24,…
+export function placementBucket(p) {
+  if (!(p > 0)) return null;
+  if (p <= 4) return p;
+  for (let k = 1; k <= 20; k++) {
+    if (p <= 3 * 2 ** k) return 3 * 2 ** k;
+    if (p <= 2 ** (k + 2)) return 2 ** (k + 2);
+  }
+  return null;
+}
+function losersTopX(round) {   // 敗者側ラウンド (start.gg は -1 = 敗者側決勝) で負けたときの区切り
+  const w2w = -round + 1;
+  const k = Math.floor(w2w / 2);
+  return w2w % 2 === 0 ? 3 * 2 ** (k - 1) : 2 ** (k + 1);
+}
+
+// 各セットに label を付ける。勝者側は全体のラウンド (フェーズを phaseOrder 順につなぎ、プレイインを除く) と本戦の大きさから、
+// 敗者側は負けた人の順位の区切りから (まだ終わっていないセットは同じフェーズ・ラウンドの終わったセット、無ければラウンドから)。
+// 下位クラスのフェーズは独立したブラケット (頭に "B-" など、大きさはそのフェーズの numSeeds)
+export function bracketLabels(doc) {
+  const phaseOf = {};
+  for (const p of doc.phases || []) for (const g of p.groups || []) phaseOf[String(g.id)] = p;
+  const info = new Map();
+  let mainSeeds = 0;
+  for (const s of doc.sets || []) {
+    const p = phaseOf[String(s.pg)];
+    if (!p) continue;
+    if (!classLetter(p.name)) mainSeeds = Math.max(mainSeeds, p.seeds || 0);
+    if (!isBracket(p.type) || s.bye || !(s.round > 0)) continue;
+    let i = info.get(p.id);
+    if (!i) info.set(p.id, (i = { order: p.order || 0, counts: {}, se: p.type === "SINGLE_ELIMINATION", letter: classLetter(p.name) }));
+    i.counts[s.round] = (i.counts[s.round] || 0) + 1;
+  }
+  let cumulative = 0;
+  for (const [, i] of [...info.entries()].sort((a, b) => a[1].order - b[1].order || a[0] - b[0])) {
+    const rounds = Object.keys(i.counts).map(Number).sort((a, b) => a - b);
+    i.playIn = new Set();
+    for (let k = 0; k < rounds.length - 1; k++) {   // 次のラウンドのちょうど 2 倍でない先頭のラウンドはプレイイン
+      if (i.counts[rounds[k]] !== i.counts[rounds[k + 1]] * 2) i.playIn.add(rounds[k]);
+      else break;
+    }
+    i.eff = rounds.filter((r) => !i.playIn.has(r));
+    i.offset = i.letter ? 0 : cumulative;
+    if (!i.letter) cumulative += i.eff.length;
+  }
+  const mainCap = capacityOf(mainSeeds);
+  const ent = doc.entrants || {};
+  const losersDone = {};   // "<フェーズ>:<ラウンド>" → 終わったセットの区切り
+  const label = (s, pending) => {
+    const p = phaseOf[String(s.pg)];
+    if (!p || s.round == null) return null;
+    const letter = classLetter(p.name);
+    const pre = letter ? letter + "-" : "";
+    if (!isBracket(p.type)) return BT_LABEL[p.type] ? pre + BT_LABEL[p.type] : null;
+    const i = info.get(p.id);
+    const se = !!i?.se;
+    const cap = letter ? capacityOf(p.seeds || 0) : mainCap;
+    if (s.round > 0) {
+      if (!i) return null;
+      if (se && !(cap > 1)) return null;
+      if (i.playIn.has(s.round)) return `${pre}Winners TOP ${se ? placementBucket(p.seeds || 0) || cap * 2 : cap * 2}`;
+      const idx = i.eff.indexOf(s.round);
+      if (idx < 0) return null;
+      return `${pre}Winners TOP ${Math.max(2, Math.floor(cap / 2 ** (i.offset + idx)))}`;
+    }
+    if (s.round < 0) {
+      if (se) return null;
+      if (!letter) {
+        const key = p.id + ":" + s.round;
+        if (pending) { if (losersDone[key]) return `Losers TOP ${losersDone[key]}`; }
+        else {
+          const loser = (s.e || []).find((id) => id != null && String(id) !== String(s.winner));
+          const e = loser != null ? ent[String(loser)] : null;
+          const b = placementBucket(e?.placement);
+          if (b) { losersDone[key] = b; return `Losers TOP ${b}`; }
+        }
+      }
+      return `${pre}Losers TOP ${losersTopX(s.round)}`;
+    }
+    return se ? null : `${pre}Grand Final`;
+  };
+  for (const s of doc.sets || []) if (s.winner != null) s.label = label(s, false);
+  for (const s of doc.sets || []) if (s.winner == null) s.label = label(s, true);
 }
 
 // ACTIVE の部門を 1 つ取り直す (doc = 前回の出力か空のもの。その場で書き換える)
 export async function updateEvent(gql, doc, ev, tour, now) {
-  const first = !doc.entrants;
+  const first = !doc.entrants || doc.v !== DOC_VERSION;
   const phases = await fetchPhases(gql, ev.id);
   const entrants = first || Object.keys(doc.entrants).length !== (ev.numEntrants || 0) ? await fetchEntrants(gql, ev.id) : doc.entrants;
   const cursor = doc._sets_after;

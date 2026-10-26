@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, BudgetExceeded,
+  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded,
   ENDED_KEEP_SEC, STALE_SEC, REFRESH_MAX_AGE_SEC,
 } from "../../deploy/live-worker/live.js";
 
@@ -188,4 +188,41 @@ test("applyStandings: 下位クラスのフェーズにいる人は残り人数�
   assert.deepEqual([1, 2, 3, 4].map((i) => doc.entrants[i].in_class), [false, true, false, true]);
   assert.equal(doc.entrants[1].place_min, 2);
   assert.equal(doc.entrants[2].place_min, null);
+});
+
+test("bracketLabels: ビルドと同じブラケットの位置 (フェーズをつなぐ・敗者側は順位・下位クラスは独立)", () => {
+  const set = (id, pg, round, e, winner) => ({ id, pg, round, e, winner, bye: false });
+  const doc = {
+    phases: [
+      { id: 1, name: "Pool", order: 1, type: "DOUBLE_ELIMINATION", seeds: 16, groups: [{ id: 11 }, { id: 12 }] },
+      { id: 2, name: "TOP8", order: 2, type: "DOUBLE_ELIMINATION", seeds: 8, groups: [{ id: 21 }] },
+      { id: 3, name: "Bクラス", order: 3, type: "SINGLE_ELIMINATION", seeds: 8, groups: [{ id: 31 }] },
+      { id: 4, name: "予選", order: 0, type: "ROUND_ROBIN", seeds: 16, groups: [{ id: 41 }] },
+    ],
+    entrants: { 1: { placement: 7 }, 2: {}, 3: {}, 4: {} },
+    sets: [
+      ...[11, 11, 11, 11, 12, 12, 12, 12].map((pg, i) => set(100 + i, pg, 1, [3, 4], 3)),
+      ...[11, 11, 12, 12].map((pg, i) => set(200 + i, pg, 2, [3, 4], null)),
+      { ...set(299, 12, 1, [3, null], null), bye: true },   // bye は数えない
+      ...[0, 1, 2, 3].map((i) => set(300 + i, 21, 1, [3, 4], null)),
+      set(400, 21, -2, [2, 1], 2),        // 負けた人は 7 位 → Losers TOP 8
+      set(401, 21, -2, [3, 4], null),     // 同じラウンドの終わったセットに合わせる
+      set(402, 21, -1, [3, 4], null),     // 無ければラウンドから (敗者側決勝 = 3)
+      ...[0, 1, 2, 3].map((i) => set(500 + i, 31, 1, [3, 4], null)),
+      ...[0, 1].map((i) => set(510 + i, 31, 2, [3, 4], null)),
+      set(600, 41, 1, [3, 4], 3),
+    ],
+  };
+  bracketLabels(doc);
+  const at = (id) => doc.sets.find((s) => s.id === id).label;
+  assert.equal(at(100), "Winners TOP 16");
+  assert.equal(at(200), "Winners TOP 8");
+  assert.equal(at(300), "Winners TOP 4");
+  assert.equal(at(400), "Losers TOP 8");
+  assert.equal(at(401), "Losers TOP 8");
+  assert.equal(at(402), "Losers TOP 3");
+  assert.equal(at(500), "B-Winners TOP 8");
+  assert.equal(at(510), "B-Winners TOP 4");
+  assert.equal(at(600), "総当たり");
+  assert.deepEqual([1, 2, 3, 4, 5, 7, 9, 13, 25, 49, 289].map(placementBucket), [1, 2, 3, 4, 6, 8, 12, 16, 32, 64, 384]);
 });
