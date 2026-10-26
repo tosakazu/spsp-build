@@ -8,6 +8,10 @@
 //
 // cron は UTC。日本時間との対応:
 //   "3 */3 * * *"          → 日本の大会データ取得 (3 時間ごと、JST も同じ 0,3,6,...時 3 分)
+//   "*/15 * * * *"         → 日本の大会データ取得の軽量モード (quick、24 時間以内に終わった未取り込みの大会だけ)。
+//                            前の回 (軽量・通常どちらでも) が動いているか待っているときは送らない (skipIfBusy)。
+//                            同じ concurrency グループに後から入った回は、待っている回を押し出す (cancelled) ので、
+//                            軽量の回が通常の回を消さないようにするため
 //   "20 3,9,12,15,21 * * *" → 日本のビルド (JST 0,6,12,18,21 時 20 分。3,9,15 時は飛ばす)
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
@@ -19,6 +23,9 @@
 const JOBS = {
   "3 */3 * * *": [
     { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true" } },
+  ],
+  "*/15 * * * *": [
+    { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true", quick: "true" }, skipIfBusy: true },
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
@@ -58,6 +65,22 @@ export async function cancelStaleQueued(job, token, now = Date.now()) {
   return cancelled;
 }
 
+// 同じワークフローに終わっていない回 (queued / in_progress / waiting / pending …) があるか。
+// 一覧が取れないときも「ある」とみなす (送らない側に倒す。次の 15 分でまた見る)
+export async function isBusy(job, token) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${job.repo}/actions/workflows/${job.workflow}/runs?per_page=10`,
+                            { headers: ghHeaders(token) });
+    if (!res.ok) { console.log(`warn: list runs ${job.repo} ${job.workflow}: ${res.status}`); return true; }
+    const busy = ((await res.json()).workflow_runs || []).filter((r) => r.status !== "completed");
+    if (busy.length) console.log(`skip ${job.repo} ${job.workflow}: ${busy.map((r) => `${r.id} ${r.status}`).join(", ")}`);
+    return busy.length > 0;
+  } catch (e) {
+    console.log(`warn: busy check ${job.repo} ${job.workflow}: ${e.message}`);
+    return true;
+  }
+}
+
 async function dispatch(job, token) {
   const url = `https://api.github.com/repos/${job.repo}/actions/workflows/${job.workflow}/dispatches`;
   let last = "";
@@ -84,6 +107,7 @@ export default {
     if (!env.JP_ACTIONS_DISPATCH_TOKEN) throw new Error("secret JP_ACTIONS_DISPATCH_TOKEN is not set");
     for (const job of jobs) {
       await cancelStaleQueued(job, env.JP_ACTIONS_DISPATCH_TOKEN);
+      if (job.skipIfBusy && await isBusy(job, env.JP_ACTIONS_DISPATCH_TOKEN)) continue;
       await dispatch(job, env.JP_ACTIONS_DISPATCH_TOKEN);
     }
   },
