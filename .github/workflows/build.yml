@@ -8,8 +8,13 @@
 #   北米   = 0・6・12・18・21 時 (ニューヨーク時間、夏時間基準。冬は 1 時間ずれる)。only_if_changed=true で起動し、
 #            北米担当者がデータを push したときだけビルドする (前回ビルドしたデータのコミットと同じなら数十秒で終わる)。
 #            (2026-09-29 から北米の定期起動は止めている。データが揃うまで)
+#   日本の軽量ビルド = 15 分ごと (2026-10-27〜)。only_if_changed=true で起動し、data-Japan の先頭が前回 spsp.games に出した
+#            ときと同じなら数十秒で終わる。download-japan の軽量モード (15 分ごと) が入れた大会を早く出すため。
+#            前の回 (日本) が終わっていなければ Worker が送らない (待っている定時の回を押し出さないように)
 # 手で起動するときは入力どおり (only_if_changed を付けなければ、北米もデータが同じかどうかに関係なくビルドする)。
 name: build
+# 一覧での見分け用。dispatch Worker は「build jp」で始まる回が終わっていなければ日本の軽量ビルドを送らない
+run-name: "build ${{ inputs.region || 'jp' }} ${{ inputs.deploy || 'r2' }}${{ inputs.only_if_changed && ' only_if_changed' || '' }}"
 
 on:
   workflow_dispatch:
@@ -25,7 +30,7 @@ on:
         options: [none, diff, r2]
         default: none
       only_if_changed:
-        description: 北米のみ。前回 spsp.games に出したときのデータのコミットと同じなら何もしない (定時起動用)
+        description: 前回 spsp.games に出したときのデータのコミットと同じなら何もしない (北米の定時起動・日本の軽量ビルド用)
         type: boolean
         default: false
       data_ref:
@@ -39,6 +44,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # 古いキャッシュを消す (最後のステップ)。日本は 15 分ごとに回るので、消さないと 10 GB の枠から北米の分が追い出される
 
 concurrency:
   group: spsp-build-${{ inputs.region || 'jp' }}
@@ -84,21 +90,21 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      # 北米の定時起動 (only_if_changed) は、前回 spsp.games に出したときのデータのコミットと同じなら何もしない
-      - name: 北米 - このデータでビルド済みか
-        id: nadone
-        if: env.REGION == 'na' && inputs.only_if_changed
+      # only_if_changed (北米の定時起動・日本の軽量ビルド) は、前回 spsp.games に出したときのデータのコミットと同じなら何もしない
+      - name: このデータでビルド済みか
+        id: built
+        if: inputs.only_if_changed
         uses: actions/cache/restore@v4
         with:
-          path: .na_built
-          key: spsp-na-built-${{ steps.plan.outputs.sha }}
+          path: .data_built
+          key: spsp-${{ env.REGION }}-built-${{ steps.plan.outputs.sha }}
           lookup-only: true
 
       - name: 続けるかどうか
         id: go
         run: |
-          if [ "${{ steps.nadone.outputs.cache-hit }}" = true ]; then
-            echo "北米のデータ (${{ steps.plan.outputs.sha }}) は前回ビルド済み。何もしない"; echo "run=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.built.outputs.cache-hit }}" = true ]; then
+            echo "$REGION のデータ (${{ steps.plan.outputs.sha }}) は前回ビルド済み。何もしない"; echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
@@ -334,13 +340,23 @@ jobs:
           path: ~/spsp-state/snap_cache
           key: spsp-snap-${{ env.REGION }}-${{ github.run_id }}
 
-      # 北米を spsp.games に出せたら、そのデータのコミットを「ビルド済み」として記録する (次の定時実行はこれを見て飛ばす)
-      - name: 北米 - ビルド済みを記録
-        if: steps.nabuild.outcome == 'success' && env.DEPLOY == 'r2'
-        run: echo "${{ steps.plan.outputs.sha }}" > .na_built
-      - name: 北米 - ビルド済みを保存
-        if: steps.nabuild.outcome == 'success' && env.DEPLOY == 'r2'
+      # spsp.games に出せたら、そのデータのコミットを「ビルド済み」として記録する (only_if_changed の回はこれを見て飛ばす)。
+      # 同じデータで既に記録があれば、保存は警告だけで飛ばされる (キャッシュの鍵は上書きできない)
+      - name: ビルド済みを記録
+        if: (steps.jpbuild.outcome == 'success' || steps.nabuild.outcome == 'success') && env.DEPLOY == 'r2'
+        run: echo "${{ steps.plan.outputs.sha }}" > .data_built
+      - name: ビルド済みを保存
+        if: (steps.jpbuild.outcome == 'success' || steps.nabuild.outcome == 'success') && env.DEPLOY == 'r2'
         uses: actions/cache/save@v4
         with:
-          path: .na_built
-          key: spsp-na-built-${{ steps.plan.outputs.sha }}
+          path: .data_built
+          key: spsp-${{ env.REGION }}-built-${{ steps.plan.outputs.sha }}
+
+      # 古いキャッシュを消す: 学習・大会ファイル・snap はこの地域の新しい 2 つ、ビルド済みの記録は新しい 5 つだけ残す
+      # (復元は restore-keys の前方一致で一番新しいものを使う。1 つ前は保険)。この回が保存した種類だけ消す。
+      # 失敗しても回は成功のまま (次の回がまた消す)
+      - name: 古いキャッシュを消す
+        if: always() && runner.environment == 'github-hosted' && steps.go.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/ci/prune_caches.sh "$REGION" "$GITHUB_RUN_ID" || echo "::warning::古いキャッシュを消せなかった"

@@ -13,6 +13,9 @@
 //                            同じ concurrency グループに後から入った回は、待っている回を押し出す (cancelled) ので、
 //                            軽量の回が通常の回を消さないようにするため
 //   "20 3,9,12,15,21 * * *" → 日本のビルド (JST 0,6,12,18,21 時 20 分。3,9,15 時は飛ばす)
+//   "7,22,37,52 * * * *"   → 日本の軽量ビルド (only_if_changed: data-Japan の先頭が前回出したときと同じなら数十秒で終わる)。
+//                            軽量の取得 (0,15,30,45 分) の後。定時のビルド (20 分) とは分をずらす。
+//                            「build jp」で始まる回 (run-name) が終わっていなければ送らない (北米の長い回は見ない)
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
 // 起動を送る前に、同じワークフローで STALE_QUEUED_MIN 分以上 queued のまま (= GitHub がランナーを割り当てていない) の
@@ -29,6 +32,10 @@ const JOBS = {
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
+  ],
+  "7,22,37,52 * * * *": [
+    { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2", only_if_changed: "true" },
+      skipIfBusy: true, busyTitlePrefix: "build jp" },
   ],
 };
 
@@ -65,14 +72,15 @@ export async function cancelStaleQueued(job, token, now = Date.now()) {
   return cancelled;
 }
 
-// 同じワークフローに終わっていない回 (queued / in_progress / waiting / pending …) があるか。
-// 一覧が取れないときも「ある」とみなす (送らない側に倒す。次の 15 分でまた見る)
+// 同じワークフローに終わっていない回 (queued / in_progress / waiting / pending …) があるか。busyTitlePrefix があれば
+// 表示名 (run-name) がそれで始まる回だけを見る。一覧が取れないときも「ある」とみなす (送らない側に倒す。次の 15 分でまた見る)
 export async function isBusy(job, token) {
   try {
     const res = await fetch(`https://api.github.com/repos/${job.repo}/actions/workflows/${job.workflow}/runs?per_page=10`,
                             { headers: ghHeaders(token) });
     if (!res.ok) { console.log(`warn: list runs ${job.repo} ${job.workflow}: ${res.status}`); return true; }
-    const busy = ((await res.json()).workflow_runs || []).filter((r) => r.status !== "completed");
+    const busy = ((await res.json()).workflow_runs || []).filter((r) => r.status !== "completed"
+      && (!job.busyTitlePrefix || (r.display_title || "").startsWith(job.busyTitlePrefix)));
     if (busy.length) console.log(`skip ${job.repo} ${job.workflow}: ${busy.map((r) => `${r.id} ${r.status}`).join(", ")}`);
     return busy.length > 0;
   } catch (e) {
