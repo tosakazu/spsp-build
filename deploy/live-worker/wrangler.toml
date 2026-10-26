@@ -1,0 +1,17 @@
+# deploy/live-worker — 開催中の大会の速報を R2 に書く Worker (worker.js 冒頭を参照)。
+# デプロイ: (cd deploy/live-worker && wrangler deploy)。鍵: wrangler secret put STARTGG_TOKEN
+name = "spsp-live"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "spsp-data"
+
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = true
