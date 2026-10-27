@@ -11,7 +11,9 @@
 //   "*/15 * * * *"         → 日本の大会データ取得の軽量モード (quick、24 時間以内に終わった未取り込みの大会だけ)。
 //                            前の回 (軽量・通常どちらでも) が動いているか待っているときは送らない (skipIfBusy)。
 //                            同じ concurrency グループに後から入った回は、待っている回を押し出す (cancelled) ので、
-//                            軽量の回が通常の回を消さないようにするため
+//                            軽量の回が通常の回を消さないようにするため。通常の回の直前 (JST 0,3,6,...時 0 分) は送らない
+//   通常の回が優先 (2026-10-27): 通常の回を送る前に、終わっていない軽量の回 (表示名 "download-japan quick"、
+//                            smash_database の run-name) を取り消す。軽量の回が通常の回を待たせないようにする
 //   "20 3,9,12,15,21 * * *" → 日本のビルド (JST 0,6,12,18,21 時 20 分。3,9,15 時は飛ばす)
 //   "7,22,37,52 * * * *"   → 日本の軽量ビルド (only_if_changed: data-Japan の先頭が前回出したときと同じなら数十秒で終わる)。
 //                            軽量の取得 (0,15,30,45 分) の後。定時のビルド (20 分) とは分をずらす。
@@ -25,10 +27,12 @@
 
 const JOBS = {
   "3 */3 * * *": [
-    { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true" } },
+    { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true" },
+      preemptTitle: "download-japan quick" },
   ],
   "*/15 * * * *": [
-    { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true", quick: "true" }, skipIfBusy: true },
+    { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true", quick: "true" }, skipIfBusy: true,
+      skipBeforeFull: true },
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
@@ -89,6 +93,33 @@ export async function isBusy(job, token) {
   }
 }
 
+// 表示名が job.preemptTitle の、終わっていない回を取り消す (通常の回を軽量の回より先に走らせる)。失敗しても起動は続ける
+export async function cancelPreempted(job, token) {
+  const base = `https://api.github.com/repos/${job.repo}/actions`;
+  let cancelled = 0;
+  try {
+    const res = await fetch(`${base}/workflows/${job.workflow}/runs?per_page=20`, { headers: ghHeaders(token) });
+    if (!res.ok) { console.log(`warn: list runs ${job.repo} ${job.workflow}: ${res.status}`); return 0; }
+    const runs = ((await res.json()).workflow_runs || [])
+      .filter((r) => r.status !== "completed" && r.display_title === job.preemptTitle);
+    for (const run of runs) {
+      let r = await fetch(`${base}/runs/${run.id}/cancel`, { method: "POST", headers: ghHeaders(token) });
+      if (r.status === 409) r = await fetch(`${base}/runs/${run.id}/force-cancel`, { method: "POST", headers: ghHeaders(token) });
+      console.log(`preempt ${job.repo} ${run.id} (${run.status}): cancel ${r.status}`);
+      if (r.status === 202) cancelled++;
+    }
+  } catch (e) {
+    console.log(`warn: preempt ${job.repo} ${job.workflow}: ${e.message}`);
+  }
+  return cancelled;
+}
+
+// 通常の取得 ("3 */3 * * *") の直前の枠か (UTC の 3 の倍数の時の 0〜4 分。JST も同じ時)
+export function isJustBeforeFull(t) {
+  const d = new Date(t);
+  return d.getUTCHours() % 3 === 0 && d.getUTCMinutes() < 5;
+}
+
 async function dispatch(job, token) {
   const url = `https://api.github.com/repos/${job.repo}/actions/workflows/${job.workflow}/dispatches`;
   let last = "";
@@ -114,7 +145,9 @@ export default {
     if (!jobs) throw new Error(`unknown cron ${event.cron}`);
     if (!env.JP_ACTIONS_DISPATCH_TOKEN) throw new Error("secret JP_ACTIONS_DISPATCH_TOKEN is not set");
     for (const job of jobs) {
+      if (job.skipBeforeFull && isJustBeforeFull(event.scheduledTime)) { console.log(`skip ${job.workflow} quick: just before the full run`); continue; }
       await cancelStaleQueued(job, env.JP_ACTIONS_DISPATCH_TOKEN);
+      if (job.preemptTitle) await cancelPreempted(job, env.JP_ACTIONS_DISPATCH_TOKEN);
       if (job.skipIfBusy && await isBusy(job, env.JP_ACTIONS_DISPATCH_TOKEN)) continue;
       await dispatch(job, env.JP_ACTIONS_DISPATCH_TOKEN);
     }
