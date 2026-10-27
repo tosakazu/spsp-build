@@ -119,6 +119,8 @@ test("runLive: ACTIVE のスマブラ部門だけ書き、index に選手の uid
   assert.equal(doc.sets.length, 2);
   assert.equal(doc.tournament_url, "https://www.start.gg/tournament/x");
   assert.deepEqual(gql.calls.map((c) => c[0]), ["LiveTournaments", "LivePhases", "LiveEntrants", "LiveSets", "LiveStandings"]);
+  const lv = gql.calls[0][1];   // beforeDate は終了予定で効くので、開催中 (終了がまだ先) の大会が落ちないよう先まで取る
+  assert.ok(lv.before > NOW && lv.after < NOW, JSON.stringify(lv));
 });
 
 test("runLive: updatedAt が同じで取り直して間もない部門は一覧だけ", async () => {
