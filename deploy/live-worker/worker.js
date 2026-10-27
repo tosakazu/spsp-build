@@ -11,7 +11,7 @@ import { runLive, makeGql } from "./live.js";
 
 const REGIONS = [{ region: "jp", countryCode: "JP" }];
 const LOCK_SEC = 10 * 60;
-const CACHE_CONTROL = "public, max-age=30";
+const CACHE_CONTROL = "public, max-age=10";
 
 export function r2Store(bucket, prefix) {
   return {

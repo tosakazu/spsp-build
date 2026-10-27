@@ -28,7 +28,7 @@ export const LOWER_CLASS_NAME_PAT = /[BCDEＢＣＤＥ]\s*クラス|(?<![A-Za-z]
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
 export const GRACE_AFTER_END_SEC = 12 * 3600;  // … で、endAt (無ければ開始) から 12 時間以内
 export const STALE_SEC = 6 * 3600;             // ACTIVE のまま 6 時間動きが無い部門は載せない (主催者が閉じ忘れたもの)
-export const REFRESH_MAX_AGE_SEC = 180;
+export const REFRESH_MAX_AGE_SEC = 50;   // 毎分の回で毎回取り直す (updatedAt は試合の報告で動かないので、実質これが更新間隔。1 分ちょうどだと時刻の揺れで 1 回おきになる)
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
 export const MAX_REQUESTS_PER_RUN = 70;
@@ -300,8 +300,8 @@ export function placementBucket(p) {
   }
   return null;
 }
-function losersTopX(round) {   // 敗者側ラウンド (start.gg は -1 = 敗者側決勝) で負けたときの区切り
-  const w2w = -round + 1;
+function losersTopX(fromFinal) {   // 敗者側決勝から数えて fromFinal 番目 (1 = 敗者側決勝) のラウンドで負けたときの区切り
+  const w2w = fromFinal + 1;
   const k = Math.floor(w2w / 2);
   return w2w % 2 === 0 ? 3 * 2 ** (k - 1) : 2 ** (k + 1);
 }
@@ -313,17 +313,20 @@ export function bracketLabels(doc) {
   const phaseOf = {};
   for (const p of doc.phases || []) for (const g of p.groups || []) phaseOf[String(g.id)] = p;
   const info = new Map();
+  const losersMax = {};   // フェーズ → 敗者側ラウンドの |round| の最大 (start.gg は敗者側決勝ほど絶対値が大きい: -4 … -10 = 敗者側決勝)
   let mainSeeds = 0;
   for (const s of doc.sets || []) {
     const p = phaseOf[String(s.pg)];
     if (!p) continue;
     if (!classLetter(p.name)) mainSeeds = Math.max(mainSeeds, p.seeds || 0);
+    if (isBracket(p.type) && s.round < 0) losersMax[p.id] = Math.max(losersMax[p.id] || 0, -s.round);
     if (!isBracket(p.type) || s.bye || !(s.round > 0)) continue;
     let i = info.get(p.id);
     if (!i) info.set(p.id, (i = { order: p.order || 0, seeds: p.seeds || 0, counts: {}, se: p.type === "SINGLE_ELIMINATION", letter: classLetter(p.name) }));
     i.counts[s.round] = (i.counts[s.round] || 0) + 1;
   }
   let cumulative = 0;
+  const mainOrder = [];
   // 本戦のフェーズは進む順 = 人数 (numSeeds) の多い順につなぐ。phaseOrder は作った順で、進む順とは限らない (TOP8 が TOP96 より前など)。
   // 本戦のフェーズに人数の分からないものがあれば phaseOrder のまま (smash_database の _phase_progress_key と同じ)
   const bySize = [...info.values()].every((i) => i.letter || i.seeds > 0);
@@ -337,8 +340,10 @@ export function bracketLabels(doc) {
     }
     i.eff = rounds.filter((r) => !i.playIn.has(r));
     i.offset = i.letter ? 0 : cumulative;
-    if (!i.letter) cumulative += i.eff.length;
+    if (!i.letter) { cumulative += i.eff.length; mainOrder.push(i); }
   }
+  // 本戦のフェーズから次のフェーズへ進む人数 (最後のフェーズは 2 = 決勝の 2 人)。敗者側決勝で負けた人はその次の順位
+  mainOrder.forEach((i, k) => { i.advance = mainOrder[k + 1]?.seeds || 2; });
   const mainCap = capacityOf(mainSeeds);
   const ent = doc.entrants || {};
   const losersDone = {};   // "<フェーズ>:<ラウンド>" → 終わったセットの区切り
@@ -371,7 +376,9 @@ export function bracketLabels(doc) {
           if (b) { losersDone[key] = b; return `Losers TOP ${b}`; }
         }
       }
-      return `${pre}Losers TOP ${losersTopX(s.round)}`;
+      const fromFinal = (losersMax[p.id] || -s.round) + s.round + 1;
+      const advance = letter ? 2 : info.get(p.id)?.advance || 2;
+      return `${pre}Losers TOP ${losersTopX(fromFinal) * Math.max(1, advance / 2)}`;
     }
     return se ? null : `${pre}Grand Final`;
   };
