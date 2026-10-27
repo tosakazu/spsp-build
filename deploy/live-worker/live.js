@@ -28,6 +28,7 @@ export const LOWER_CLASS_NAME_PAT = /[BCDEＢＣＤＥ]\s*クラス|(?<![A-Za-z]
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
 export const GRACE_AFTER_END_SEC = 12 * 3600;  // … で、endAt (無ければ開始) から 12 時間以内
 export const STALE_SEC = 6 * 3600;             // ACTIVE のまま 6 時間動きが無い部門は載せない (主催者が閉じ忘れたもの)
+export const STALE_RECHECK_SEC = 1800;         // 閉じ忘れと判定した部門を見直す間隔 (updatedAt は試合の報告で動かないので、セットの更新を見て決める)
 export const REFRESH_MAX_AGE_SEC = 50;   // 毎分の回で毎回取り直す (updatedAt は試合の報告で動かないので、実質これが更新間隔。1 分ちょうどだと時刻の揺れで 1 回おきになる)
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
@@ -427,6 +428,8 @@ function summary(doc, tour) {   // index.json の 1 件
 export async function runLive({ gql, store, countryCode = "JP", now = Math.floor(Date.now() / 1000), log = () => {} }) {
   const state = (await store.get("_state.json")) || {};
   const prev = state.events || {};
+  const staleSeen = state.stale || {};   // event_id → 閉じ忘れと判定した時刻
+  const stale = {};
   const tours = await listTournaments(gql, countryCode, now);
   const next = {};
   const work = [];
@@ -439,7 +442,12 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
       const key = String(ev.id);
       const p = prev[key];
       if (ev.state === "ACTIVE") {
-        if (!p && now - (ev.updatedAt || 0) > STALE_SEC) continue;   // 閉じ忘れ (下で既存のものも見る)
+        // 部門の updatedAt は試合の報告で動かない (2 日目の大会など) ので、古くても一度取ってセットの更新で決める。
+        // 閉じ忘れと判定したものは STALE_RECHECK_SEC の間は取らない
+        if (!p && now - (ev.updatedAt || 0) > STALE_SEC && staleSeen[key] && now - staleSeen[key] < STALE_RECHECK_SEC) {
+          stale[key] = staleSeen[key];
+          continue;
+        }
         work.push({ key, ev, t, p, ending: false });
       } else if (p && !p.ended_at) {
         work.push({ key, ev, t, p, ending: true });                  // ACTIVE でなくなった: 最後に 1 回取り直す
@@ -465,7 +473,7 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
       continue;
     }
     if (ending) doc.ended_at = now;
-    if (!ending && now - lastActivity(ev, doc) > STALE_SEC) continue;   // 動きが無い ACTIVE (閉じ忘れ)
+    if (!ending && now - lastActivity(ev, doc) > STALE_SEC) { stale[key] = now; continue; }   // 動きが無い ACTIVE (閉じ忘れ)
     await store.put(`events/${key}.json`, doc);
     const uids = [...new Set(Object.values(doc.entrants).map((e) => e.uid).filter((u) => u != null).map(String))];
     next[key] = { tournament_id: t.id, updated_at: ev.updatedAt, refreshed_at: now, ...(ending ? { ended_at: now } : {}),
@@ -486,7 +494,7 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     for (const u of p.uids || []) (players[u] ||= []).push(p.summary.event_id);
   }
   await store.put("index.json", { v: DOC_VERSION, updated_at: now, events, players });
-  await store.put("_state.json", { v: DOC_VERSION, updated_at: now, events: next });
+  await store.put("_state.json", { v: DOC_VERSION, updated_at: now, events: next, stale });
   log(`tournaments in window ${tours.length}, events ${events.length}, requests ${gql.count ?? "?"}, failed ${failed}, deferred ${deferred}`);
   return { tournaments: tours.length, events: events.length, failed, deferred };
 }

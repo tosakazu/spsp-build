@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded,
-  ENDED_KEEP_SEC, STALE_SEC, REFRESH_MAX_AGE_SEC,
+  ENDED_KEEP_SEC, STALE_SEC, STALE_RECHECK_SEC, REFRESH_MAX_AGE_SEC,
 } from "../../deploy/live-worker/live.js";
 
 const NOW = 1_800_000_000;
@@ -157,12 +157,24 @@ test("runLive: ACTIVE でなくなったら最後に取り直して ended、ENDE
   assert.equal(await store.get("events/100.json"), null);
 });
 
-test("runLive: 動きの無い ACTIVE (閉じ忘れ) は載せない", async () => {
+test("runLive: 動きの無い ACTIVE (閉じ忘れ) は載せない・STALE_RECHECK_SEC の間は取り直さない", async () => {
   const { tours, ev } = fixture({ updatedAt: NOW - STALE_SEC - 10 });
-  const gql = fakeGql(tours, ev);
-  const r = await runLive({ gql, store: memStore(), now: NOW });
+  for (const s of ev.sets) s.updatedAt = NOW - STALE_SEC - 10;
+  const store = memStore();
+  const r = await runLive({ gql: fakeGql(tours, ev), store, now: NOW });
   assert.equal(r.events, 0);
-  assert.equal(gql.calls.length, 1);
+  const gql = fakeGql(tours, ev);
+  await runLive({ gql, store, now: NOW + 60 });
+  assert.deepEqual(gql.calls.map((c) => c[0]), ["LiveTournaments"]);
+  const gql2 = fakeGql(tours, ev);
+  await runLive({ gql: gql2, store, now: NOW + STALE_RECHECK_SEC + 1 });
+  assert.equal(gql2.calls.length > 1, true);   // 見直す
+});
+
+test("runLive: 部門の updatedAt が古くても、セットが動いていれば載せる (2 日目の大会など)", async () => {
+  const { tours, ev } = fixture({ updatedAt: NOW - STALE_SEC - 10 });
+  const r = await runLive({ gql: fakeGql(tours, ev), store: memStore(), now: NOW });
+  assert.equal(r.events, 1);
 });
 
 test("runLive: 問い合わせの上限に当たったら残りは次の回 (前回の分は残す)", async () => {
