@@ -11,7 +11,8 @@
 # rclone sync は中身 (MD5) が変わったファイルだけ送る (--checksum。history/ の日次全件も内容が同じなら送らない)。
 # 2026-10-21 から、前回送ったものの一覧 (<地域>/_sync_manifest.json.gz、deploy/r2_manifest.py) と手元を比べて変わったものだけ送る
 # (R2 の一覧を取らない)。7 日に 1 回は従来の全件 sync で R2 と突き合わせる (下の MODE)。試験 = tests/deploy/test_sync_r2_manifest.sh
-# Cache-Control はプレフィックスごと: players/ tournaments/ history/ は 1 日、それ以外 (players_current.json / meta.json / data/ / *.jsonl) は 5 分。
+# Cache-Control はプレフィックスごと: tournaments/ history/ は 1 日、それ以外 (players/ / players_current.json / meta.json / data/ / *.jsonl) は 5 分。
+# players/ は大会に出るたびに変わる (最新の大会結果・出場履歴) ので 5 分 (10-27 まで 1 日 + stale-while-revalidate で、出た大会が最大 1 日出なかった)。
 # 揮発側に stale-while-revalidate は付けない: 付けるとブラウザが古い一覧を最大 1 時間使い回す (09-22 に絵文字の更新が見えなかった)。5 分ごとの再検証は edge が 304 で返すので安い。
 set -eu
 SRC=${1:?配信ディレクトリ}; REGION=${2:-jp}
@@ -127,7 +128,7 @@ fi
 # 組ごとの根と Cache-Control (送る順。まとめ (data/views/bundle/) は一覧 (players_index・current/) より先に送る: 一覧が先に届くと、
 # まとめた選手のページがまだ無いまとめを読みに行く)
 group_root() { case $1 in bundle) echo data/views/bundle ;; *) echo "$1" ;; esac; }
-group_cc() { case $1 in players|tournaments|history) echo "$CC_STABLE" ;; *) echo "$CC_VOLATILE" ;; esac; }
+group_cc() { case $1 in tournaments|history) echo "$CC_STABLE" ;; *) echo "$CC_VOLATILE" ;; esac; }
 if [ "$MODE" = manifest ]; then
   for g in bundle players tournaments history data; do
     root=$(group_root "$g")
@@ -156,8 +157,9 @@ else
     [ -d "$SRC/$d" ] || continue
     filt=(--include '*.json')
     if [ "$d" != tournaments ] && [ -f "$UNBUNDLED" ]; then filt=(--files-from "$UNBUNDLED"); fi
+    cc=$(group_cc "$d")
     "$RCLONE" sync "$SRC/$d" "$DEST/$d" "${COMMON[@]}" "${filt[@]}" \
-      --header-upload "$CC_STABLE"
+      --header-upload "$cc"
   done
   # 揮発部分: 5 分キャッシュ。data/ (索引・タグ・geo など) と一覧ファイル
   "$RCLONE" sync "$SRC/data" "$DEST/data" "${COMMON[@]}" --include '*.json' \
