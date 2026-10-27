@@ -512,14 +512,14 @@ def make_player_transform(cascade_snapshots: dict, bt_timeline_all: dict,
             for t in rec['tournaments']:
                 eid = t.get('event_id')
                 if eid is None:
-                    # 下位クラス(cv)行: 親 event の class 試合分の内部 delta 収支を表示.
-                    # (本戦分は親 event 行へ。直対評価=peak180 は event 単位だが cv 行は
-                    #  「クラス内対戦の収支」として同 class 分の内部 delta を出す.)
+                    # 下位クラス(cv)行: 親 event の class 試合分の内部 delta 収支を bt_internal_d に出す (本戦分は親 event 行へ)。
+                    # 直対評価スコア (peak180) の変化は event 単位で親 event 行の bt_d に入っている (クラスの試合も込み) ので、
+                    # cv 行の bt_d は 0 (2026-10-27 まで内部 delta を入れていて、スコアが下がったように見えていた)
                     peid = t.get('parent_event_id')
                     cs = (_cls_split.get(peid) or _cls_split.get(str(peid))) if peid is not None else None
                     if cs is not None:
                         t['bt_used'] = bool(cs[1])
-                        t['bt_d'] = float(cs[0])
+                        t['bt_d'] = 0.0
                         t['bt_internal_d'] = float(cs[0])
                     continue
                 info = per_tour.get(str(eid))
