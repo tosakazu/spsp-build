@@ -128,7 +128,7 @@ test("runLive: updatedAt が同じで取り直して間もない部門は一覧�
   const store = memStore();
   await runLive({ gql: fakeGql(tours, ev), store, now: NOW });
   const gql = fakeGql(tours, ev);
-  await runLive({ gql, store, now: NOW + 60 });
+  await runLive({ gql, store, now: NOW + 30 });
   assert.deepEqual(gql.calls.map((c) => c[0]), ["LiveTournaments"]);
   // REFRESH_MAX_AGE_SEC を過ぎたら取り直す (参加者は人数が同じなので取らない)。セットは続きから
   const gql2 = fakeGql(tours, ev);
@@ -207,9 +207,9 @@ test("bracketLabels: ビルドと同じブラケットの位置 (フェーズを
       ...[11, 11, 12, 12].map((pg, i) => set(200 + i, pg, 2, [3, 4], null)),
       { ...set(299, 12, 1, [3, null], null), bye: true },   // bye は数えない
       ...[0, 1, 2, 3].map((i) => set(300 + i, 21, 1, [3, 4], null)),
-      set(400, 21, -2, [2, 1], 2),        // 負けた人は 7 位 → Losers TOP 8
-      set(401, 21, -2, [3, 4], null),     // 同じラウンドの終わったセットに合わせる
-      set(402, 21, -1, [3, 4], null),     // 無ければラウンドから (敗者側決勝 = 3)
+      set(400, 21, -1, [2, 1], 2),        // 負けた人は 7 位 → Losers TOP 8
+      set(401, 21, -1, [3, 4], null),     // 同じラウンドの終わったセットに合わせる
+      set(402, 21, -2, [3, 4], null),     // 無ければラウンドから (start.gg は敗者側決勝ほど |round| が大きい。ここでは -2 = 敗者側決勝 = 3)
       ...[0, 1, 2, 3].map((i) => set(500 + i, 31, 1, [3, 4], null)),
       ...[0, 1].map((i) => set(510 + i, 31, 2, [3, 4], null)),
       set(600, 41, 1, [3, 4], 3),
@@ -245,4 +245,33 @@ test("bracketLabels: 本戦のフェーズは人数の多い順につなぐ (pha
   const at = (id) => doc.sets.find((s) => s.id === id).label;
   assert.equal(at("31-1-0"), "Winners TOP 32");
   assert.equal(at("21-1-0"), "Winners TOP 4");
+});
+
+test("bracketLabels: 敗者側のまだ終わっていないラウンドは敗者側決勝から数える (19 人: -4 = 敗者側 1 回戦 … -10 = 敗者側決勝)", () => {
+  const doc = {
+    phases: [{ id: 1, name: "Singles", order: 1, type: "DOUBLE_ELIMINATION", seeds: 19, groups: [{ id: 11 }] }],
+    entrants: {},
+    sets: [-4, -5, -6, -7, -8, -9, -10].map((r) => ({ id: r, pg: 11, round: r, e: [1, 2], winner: null, bye: false })),
+  };
+  bracketLabels(doc);
+  assert.deepEqual(doc.sets.map((s) => s.label), [24, 16, 12, 8, 6, 4, 3].map((n) => `Losers TOP ${n}`));
+});
+
+test("bracketLabels: プールの敗者側決勝は次のフェーズに進む人数の次の順位", () => {
+  const doc = {
+    phases: [
+      { id: 1, name: "Pools", order: 1, type: "DOUBLE_ELIMINATION", seeds: 64, groups: [{ id: 11 }] },
+      { id: 2, name: "TOP8", order: 2, type: "DOUBLE_ELIMINATION", seeds: 8, groups: [{ id: 21 }] },
+    ],
+    entrants: {},
+    sets: [
+      ...[1, 2, 3].map((r) => ({ id: `w${r}`, pg: 11, round: r, e: [1, 2], winner: null, bye: false })),
+      { id: "w21", pg: 21, round: 1, e: [1, 2], winner: null, bye: false },
+      ...[-1, -2, -3].map((r) => ({ id: r, pg: 11, round: r, e: [1, 2], winner: null, bye: false })),
+    ],
+  };
+  bracketLabels(doc);
+  const at = (id) => doc.sets.find((s) => s.id === id).label;
+  assert.equal(at(-3), "Losers TOP 12");   // 8 人が進む → 敗者側決勝で負けた人は 9〜12 位
+  assert.equal(at(-2), "Losers TOP 16");
 });
