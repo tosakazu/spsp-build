@@ -188,7 +188,8 @@ export async function fetchAllNodes(gql, query, variables, path, perPage) {
 
 export async function listTournaments(gql, countryCode, now) {
   const nodes = await fetchAllNodes(gql, LIST_QUERY,
-    { gameId: GAME_ID, cc: countryCode, before: now, after: now - WINDOW_BEFORE_SEC }, ["tournaments"], 40);
+    // beforeDate は終了予定 (endAt) で絞られるので、now にすると開催中の大会が落ちる。開始済みかどうかは inWindow で見る
+    { gameId: GAME_ID, cc: countryCode, before: now + WINDOW_BEFORE_SEC, after: now - WINDOW_BEFORE_SEC }, ["tournaments"], 40);
   return nodes.filter((t) => inWindow(t, now));
 }
 
