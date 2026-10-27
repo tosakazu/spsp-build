@@ -23,7 +23,7 @@ import time
 
 from spsp.columnar import SHARED_UIDS, UidMap, compact_uid_map
 from spsp.lazy_views import IntKeyView
-from spsp.common import (OVERSEAS_UIDS, _bracket_order_key_parts, jp_counter_rank, LV_TOPN_CAP, PEAK_ALLTIME_CUTOFF_DATE, uid_of,
+from spsp.common import (OVERSEAS_UIDS, ORDER_KEY, _bracket_order_key_parts, jp_counter_rank, LV_TOPN_CAP, PEAK_ALLTIME_CUTOFF_DATE, uid_of,
                          flag_tags, series_slug)
 
 
@@ -55,7 +55,17 @@ def _bracket_order_key_dict(m: dict):
     bt_per_match の per-occurrence リスト (学習側で _bracket_order_key 順に記録) と
     表示行を対応付けるために、同じ順序キーを dict 行から計算する。本体は共通。
     """
+    o = m.get(ORDER_KEY)
+    if o is not None:
+        return _bracket_order_key_parts(o[0], m.get('round_text'), o[1])
     return _bracket_order_key_parts(m.get('global_bracket_label'), m.get('round_text'), m.get('global_top_x'))
+
+
+def strip_order(rows) -> None:
+    """表示用の行から ORDER_KEY (並べるためだけのもの) を消す。"""
+    for r in rows or ():
+        if ORDER_KEY in r:
+            del r[ORDER_KEY]
 
 _EMPTY: dict = {}   # .get(k, _EMPTY) 用 (読むだけ。毎回 {} を作らない)
 _NO_D = object()    # history の行に 'd' が無い (= 現在の点として '0' の表を引く)

@@ -593,8 +593,21 @@ def _bracket_order_key_parts(label, round_text, top_x):
 
 
 def _bracket_order_key(m):
-    """Match オブジェクト用 (v4.learn / build の sort key)。"""
+    """Match オブジェクト用 (v4.learn / build の sort key)。旧ラベル (Match.legacy_global_*) があればそちらで並べる。"""
+    lb = getattr(m, 'legacy_global_bracket_label', None)
+    if lb is not None:
+        return _bracket_order_key_parts(lb, m.round_text, m.legacy_global_top_x)
     return _bracket_order_key_parts(m.global_bracket_label, m.round_text, m.global_top_x)
+
+
+# 表示用の試合の行 (dict) に、学習の並びの旧ラベルを持たせるキー。overlay が並べるのに使って書き出す前に消す
+ORDER_KEY = '_order'
+
+
+def order_fields(m) -> dict:
+    """試合の行に足す {ORDER_KEY: [旧 label, 旧 top_x]} (旧ラベルのある試合だけ)。"""
+    lb = getattr(m, 'legacy_global_bracket_label', None)
+    return {} if lb is None else {ORDER_KEY: [lb, m.legacy_global_top_x]}
 
 
 # ─── from build_tjpr_ranking (1192-1234): compute_losers_runs ───
