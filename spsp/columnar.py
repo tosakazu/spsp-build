@@ -1356,7 +1356,8 @@ class TourEntryStore:
 
 
 _VIEW_FIELDS = ('round', 'round_text', 'phase_name', 'phase_bracket_type', 'winners_top', 'losers_top', 'bracket_label',
-                'global_round', 'global_top_x', 'global_bracket_label', 'winner_score', 'loser_score')
+                'global_round', 'global_top_x', 'global_bracket_label', 'winner_score', 'loser_score',
+                'legacy_global_top_x', 'legacy_global_bracket_label')
 
 
 class MatchView:

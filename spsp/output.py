@@ -58,6 +58,7 @@ from spsp.common import (
 )
 from spsp.country_ja import country_ja, load_country_map
 from spsp import common as _common
+from spsp import overlay as _overlay
 from spsp import tour_cache as _tour_cache
 from spsp.overlay import json_roundtrip, _np_scalar_to_py
 from spsp.columnar import IntCounts, TourEntryStore, tour_value
@@ -525,6 +526,7 @@ def _build_tour_matches_out(t, match_id_deltas):
             'w_d': md_.get('d_w', 0.0), 'l_d': md_.get('d_l', 0.0),
             'w_tracked': md_.get('w_tracked', False),
             'l_tracked': md_.get('l_tracked', False),
+            **_common.order_fields(m),   # overlay が並べるのに使って消す
         })
     return out
 
@@ -613,6 +615,7 @@ def build_and_write_all_tournament_docs(
         t_doc['chars'] = _event_chars(t.event_path)   # その大会で使ったキャラ (大会ページの絵文字は当時のもの)
         if overlay is not None:
             t_doc = overlay.tournament(json_roundtrip(t_doc))
+        _overlay.strip_order(t_doc.get('matches'))
         if at_time_base is not None:
             _set_at_time_base(t_doc, at_time_base.get(tid) or {})
         # 参加者の現在状態 (global_ranks / tjpr_w …) は落とす。大会ページは players_current.json から引く
@@ -1449,6 +1452,7 @@ def _build_recent_matches(
                 'bracket_type': _common.match_bracket_type(m_ref),
                 'p_score': (ws if won else ls),
                 'o_score': (ls if won else ws),
+                **_common.order_fields(m_ref),   # overlay が並べるのに使って消す
             }
         recent_matches.append(rec)
     return recent_matches
@@ -1941,6 +1945,7 @@ def build_and_write_all_player_records(
                 slim_rec['top_tours'] = top_tours_final
             final_rk = slim_rec.get('ranks')   # overlay.note_final_ranks (大会 JSON の global_ranks 用) は呼び出し側で
             slim_bytes = dump_json_bytes(slim_rec) + b'\n'
+        _overlay.strip_order(detail_rec.get('recent_matches'))
         # 安定部分 / 揮発部分 / 履歴に分けて書く (docs/refactor/04_player_json_split.md)。
         # detail_rec (完全形) はこの後の char_rows / last_activity にそのまま使う。
         _stable, _current, _hist_rows = split_detail(detail_rec, eval_date)

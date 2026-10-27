@@ -78,6 +78,13 @@ class Match:
     global_bracket_label: str | None = None   # global "Winners TOP X" / "Losers TOP X"
     winner_score: int | None = None    # 試合スコア (勝者側のセット獲得数)
     loser_score: int | None = None     # 試合スコア (敗者側のセット獲得数)
+    # フェーズを start.gg の phaseOrder (作った順) でつないでいたころのラベル。global_* (表示) と違う試合だけ入る
+    # (matches.json の legacy_global_*、smash_database redownload_matches_v2.legacy_order_fields)。
+    # 学習の試合の並び (common._bracket_order_key) は来季までこちらを使う (ランキングをシーズン途中で変えない)。
+    # 値が無いことを表すため、label は '' / top_x は 0 で入れる (並びのキーでは None と同じ扱い)。
+    # SPSP_PHASE_ORDER_BY_SIZE=1 なら読まない (= 直した順で学習する。来季の切り替え)
+    legacy_global_top_x: int | None = None
+    legacy_global_bracket_label: str | None = None
 
 
 @dataclass
@@ -146,12 +153,16 @@ class _Share:
         return v
 
 
+_PHASE_ORDER_BY_SIZE = os.environ.get('SPSP_PHASE_ORDER_BY_SIZE', '0') == '1'
+
+
 def _match_from_row(m: dict, ts: int, event_dir: Path, is_class: bool, sh=None) -> Match:
     """matches.json の 1 行 (完了・DQ でない試合) → Match。sh = _Share (同じ値のオブジェクトをまとめる。無くても値は同じ)。"""
     if sh is None:
         sh = _Share()
     g = m.get
     rr = g("phase_bracket_type") == 'ROUND_ROBIN'
+    legacy = not _PHASE_ORDER_BY_SIZE and "legacy_global_bracket_label" in m
     return Match(
         timestamp=ts,
         winner_id=sh(int(m["winner_id"])),
@@ -176,6 +187,8 @@ def _match_from_row(m: dict, ts: int, event_dir: Path, is_class: bool, sh=None) 
         global_bracket_label=sh(g("global_bracket_label")),
         winner_score=sh(g("winner_score")),
         loser_score=sh(g("loser_score")),
+        legacy_global_top_x=(sh(g("legacy_global_top_x") or 0) if legacy else None),
+        legacy_global_bracket_label=(sh(g("legacy_global_bracket_label") or '') if legacy else None),
     )
 
 
