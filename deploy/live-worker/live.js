@@ -1,6 +1,8 @@
 // live.js — 開催中の大会の速報 (プレイヤーページの「参加中の大会」) を start.gg から取って書き出す。副作用は引数の gql / store だけ。
 //
 // ランキング用の取得 (smash_database の download.py) とは別物。ここで書くものはランキングに入らない。
+// 2026-10-28 から 5 分ごと (wrangler.toml の cron)。ログインした人のブラウザは start.gg から直接読み直す (spsp-web js/live_fetch.js が
+// このファイルの順位・ブラケットの位置の計算を写している。applyStandings / bracketLabels などを変えるときは両方)。
 // 載せるのは start.gg が ACTIVE と言っている部門だけ。ACTIVE でなくなったら最後に 1 回取り直して ENDED_KEEP_SEC だけ残し、
 // その後は消す (確定した結果は通常の取得とビルドが拾う)。ランキングの対象外になる大会 (オンライン・身内など) も載せる
 // (スマブラ SP の部門、または下位クラスの名前の部門。download.py の _LOWER_CLASS_NAME_PAT と同じ)。
@@ -29,7 +31,7 @@ export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった�
 export const GRACE_AFTER_END_SEC = 12 * 3600;  // … で、endAt (無ければ開始) から 12 時間以内
 export const STALE_SEC = 6 * 3600;             // ACTIVE のまま 6 時間動きが無い部門は載せない (主催者が閉じ忘れたもの)
 export const STALE_RECHECK_SEC = 1800;         // 閉じ忘れと判定した部門を見直す間隔 (updatedAt は試合の報告で動かないので、セットの更新を見て決める)
-export const REFRESH_MAX_AGE_SEC = 50;   // 毎分の回で毎回取り直す (updatedAt は試合の報告で動かないので、実質これが更新間隔。1 分ちょうどだと時刻の揺れで 1 回おきになる)
+export const REFRESH_MAX_AGE_SEC = 290;  // 5 分ごとの回で毎回取り直す (updatedAt は試合の報告で動かないので、実質これが更新間隔。5 分ちょうどだと時刻の揺れで 1 回おきになる)
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
 export const MAX_REQUESTS_PER_RUN = 70;
