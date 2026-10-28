@@ -11,7 +11,8 @@ binding = "BUCKET"
 bucket_name = "spsp-data"
 
 [triggers]
-crons = ["* * * * *"]
+# 5 分ごと (2026-10-28 から。ログインした人のブラウザは start.gg から 15 秒ごとに直接読み直す: spsp-web js/live_fetch.js)
+crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true
