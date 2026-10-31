@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded,
+  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded, mergeSets,
   ENDED_KEEP_SEC, STALE_SEC, STALE_RECHECK_SEC, REFRESH_MAX_AGE_SEC,
 } from "../../deploy/live-worker/live.js";
 
@@ -286,4 +286,25 @@ test("bracketLabels: プールの敗者側決勝は次のフェーズに進む�
   const at = (id) => doc.sets.find((s) => s.id === id).label;
   assert.equal(at(-3), "Losers TOP 12");   // 8 人が進む → 敗者側決勝で負けた人は 9〜12 位
   assert.equal(at(-2), "Losers TOP 16");
+});
+
+test("mergeSets: プールが始まって本物の id になったら、同じプール・識別子の仮の id (preview_…) のセットを捨てる", () => {
+  const rec = (id, pg, ident, winner = null) => ({ id, pg, round: 2, ident, e: [1, winner ? 2 : null], winner });
+  const prev = [rec("preview_10_2_0", 10, "D"), rec("preview_10_2_1", 10, "E"), rec("preview_20_2_0", 20, "D")];
+  const out = mergeSets(prev, [rec(5001, 10, "D", 1)]);
+  assert.deepEqual(out.map((s) => String(s.id)), ["5001", "preview_10_2_1", "preview_20_2_0"]);   // 別の識別子・別のプールの仮のセットは残す
+  assert.deepEqual(mergeSets(null, [rec("preview_10_2_0", 10, "D")]).map((s) => s.id), ["preview_10_2_0"]);
+});
+
+test("runLive: 前回の仮の id のセットは、本物のセットが来たら消える (進んだ後に「次 未定」が残らない)", async () => {
+  const { tours, ev } = fixture();
+  ev.sets = [{ ...set("preview_10_1_0", 1, 4, null, NOW - 600), state: 1, slots: [{ entrant: { id: 1 } }, { entrant: null }] }, { ...set(1001, 2, 3, null, NOW - 120), identifier: "B" }];
+  const store = memStore();
+  await runLive({ gql: fakeGql(tours, ev), store, now: NOW });
+  assert.deepEqual((await store.get("events/100.json")).sets.map((s) => String(s.id)), ["1001", "preview_10_1_0"]);
+  const later = NOW + 600;
+  tours[0].events[0].updatedAt = later - 10;
+  ev.sets = [set(1000, 1, 4, 1, later - 30), { ...set(1001, 2, 3, null, NOW - 120), identifier: "B" }];   // 仮の id は差分に出てこない
+  await runLive({ gql: fakeGql(tours, ev), store, now: later });
+  assert.deepEqual((await store.get("events/100.json")).sets.map((s) => String(s.id)), ["1000", "1001"]);
 });

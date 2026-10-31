@@ -219,6 +219,19 @@ async function fetchEntrants(gql, eid) {
   return out;
 }
 
+// 前回のセットに今回取れたセットを重ねる。start.gg はプールが始まる前の試合を仮の id ("preview_<プール>_<ラウンド>_<番号>") で返し、
+// 始まると本物の id に変わる。仮の id のセットは差分の問い合わせに二度と出てこないので、同じプール・同じ識別子 (A, B, …) の
+// 本物のセットがあれば仮の方を捨てる (残すと、進んだ後も「次 未定」が出る)
+export function mergeSets(prev, fresh) {
+  const sets = new Map((prev || []).map((s) => [String(s.id), s]));
+  for (const s of fresh) sets.set(String(s.id), s);
+  const real = new Set();
+  for (const s of sets.values()) if (!String(s.id).startsWith("preview") && s.ident != null) real.add(`${s.pg}|${s.ident}`);
+  return [...sets.values()]
+    .filter((s) => !(String(s.id).startsWith("preview") && real.has(`${s.pg}|${s.ident}`)))
+    .sort((a, b) => String(a.pg).localeCompare(String(b.pg)) || (a.round || 0) - (b.round || 0) || String(a.id).localeCompare(String(b.id)));
+}
+
 export function setRecord(s) {
   const slots = s.slots || [];
   const games = [...(s.games || [])].sort((a, b) => (a.orderNum || 0) - (b.orderNum || 0)).map((g) => {
@@ -398,14 +411,13 @@ export async function updateEvent(gql, doc, ev, tour, now) {
   const after = first || cursor == null ? null : Math.max(0, cursor - SET_CURSOR_MARGIN_SEC);
   const fresh = (await fetchAllNodes(gql, SETS_QUERY, { eid: ev.id, after }, ["event", "sets"], 40)).map(setRecord);
   const standings = await fetchStandings(gql, ev.id);
-  const sets = new Map((first ? [] : doc.sets || []).map((s) => [String(s.id), s]));
-  for (const s of fresh) sets.set(String(s.id), s);
+  const sets = mergeSets(first ? [] : doc.sets, fresh);
   Object.assign(doc, {
     v: DOC_VERSION, event_id: ev.id, event_name: ev.name, tournament_id: tour.id, tournament_name: tour.name,
     url: "https://www.start.gg/" + (ev.slug || ""), tournament_url: "https://www.start.gg" + (tour.url || ""),
     start_at: ev.startAt ?? null, num_entrants: ev.numEntrants ?? null, is_online: ev.isOnline ?? null,
     state: ev.state, phases, entrants,
-    sets: [...sets.values()].sort((a, b) => String(a.pg).localeCompare(String(b.pg)) || (a.round || 0) - (b.round || 0) || String(a.id).localeCompare(String(b.id))),
+    sets,
     _sets_after: now, updated_at: now,
   });
   applyStandings(doc, standings);
