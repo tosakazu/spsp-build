@@ -239,7 +239,8 @@ def build_tournament_metadata(all_tournaments, *, tournament_display_name,
         # BT 学習 / DQ filter は親 event 側で完結するため、ここでは scoring のみ.
         is_class_virtual = tournament_is_class_virtual(t.event_path)
         parent_eid = tournament_parent_event_id(t.event_path) if is_class_virtual else None
-        class_letter = tournament_class_letter(t.event_path) if is_class_virtual else None
+        # クラスの字: 仮想大会はディレクトリ名、単独の下位クラス大会 (例: 「【Bクラス】Victoire #2」) は名前から (derived.json、Japan rules v17)
+        class_letter = tournament_class_letter(t.event_path) if (is_class_virtual or is_lower_class) else None
         if is_class_virtual:
             is_lower_class = True  # virtual は必ず下位クラス扱い (Lv4/Lv5 除外)
         # 実質休日: お盆/年末年始の nent>=80 大会は平日開催でも休日扱い
@@ -266,7 +267,7 @@ def build_tournament_metadata(all_tournaments, *, tournament_display_name,
             'is_lower_class': is_lower_class,  # 下位クラス (Lv4/5 除外)
             'is_class_virtual': is_class_virtual,  # クラス bracket virtual sub-tournament
             'parent_event_id': parent_eid,         # virtual のみ: 親 event id (matches lookup 用)
-            'class_letter': class_letter,          # virtual のみ: B/C/D/E
+            'class_letter': class_letter,          # virtual と、名前にクラスの字がある単独の下位クラス大会: B/C/D/E
             'startgg_url': f"https://www.start.gg{_startgg_url_path}" if _startgg_url_path else None,
             'is_gf_missing': _is_gf_missing,       # nent>=8 で GF 試合が start.gg 側で欠損 → 集計除外
             'has_gf_recorded': _has_gf_recorded,   # 生フラグ (= attr.json 由来, 未マークは None)
