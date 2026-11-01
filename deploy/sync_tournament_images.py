@@ -22,9 +22,14 @@ R2 の置き方 (中身で重複をまとめる。シリーズ大会は同じ画
 - ダウンロードに失敗したもの (404 など) は数えて表示し、次回また試す。失敗があっても終了コードは 0。
   rclone の失敗は 1 (対応表は書かない)。
 
+縮小版だけのモード (--thumbs-only、北米用。2026-11-01〜):
+  元画像は R2 に置かず、落としたその場で縮小版 (t/) を作って送る。北米は大会が 15 万あり、元画像を全部置くと 30 GB 近くになるため。
+  対応表の file は日本と同じ形 (h/<MD5>.<拡張子>、元画像の中身の MD5) だが、h/ には何も無い。縮小版が同じ MD5 なら使い回す。
+  置き場は地域ごとに分ける (北米 = images/tournament/na/、--dest で指定)。
+
 使い方:
   .venv/bin/python deploy/sync_tournament_images.py [--index smash_db_tournament/data/startgg/Japan/tournament_images.jsonl]
-      [--limit N] [--workers 4] [--dry-run]
+      [--limit N] [--workers 4] [--dry-run] [--thumbs-only --dest r2:spsp-data/images/tournament/na]
 """
 from __future__ import annotations
 
@@ -110,6 +115,17 @@ def download(session: requests.Session, url: str) -> tuple[bytes | None, str | N
             reason = type(e).__name__
         time.sleep(2 * (attempt + 1))
     return None, reason
+
+
+def fetch_one(session: requests.Session, url: str, thumbs_only: bool) -> tuple[bytes | None, bytes | None, str | None]:
+    """(元画像, 縮小版 (thumbs_only のときだけ), 失敗の理由)。縮小版も並列の中で作る (北米の初回は 10 万枚を超える)。"""
+    body, reason = download(session, url)
+    if body is None or not thumbs_only:
+        return body, None, reason
+    try:
+        return body, make_thumb(body), None
+    except Exception as e:   # 壊れた画像・対応外の形式
+        return None, None, f"縮小版を作れない ({type(e).__name__})"
 
 
 def write_manifest(manifest: dict, dest: str, tmp: Path) -> None:
@@ -230,6 +246,7 @@ def main() -> int:
     ap.add_argument('--dry-run', action='store_true', help='取る件数を数えるだけ')
     ap.add_argument('--thumb-limit', type=int, default=None, help='今回作る縮小版の最大数 (初回の一括作成を分けるとき)')
     ap.add_argument('--tournaments', type=Path, default=None, help='大会 → 部門 (既定: --index と同じ場所の tournaments.jsonl)')
+    ap.add_argument('--thumbs-only', action='store_true', help='元画像を置かず縮小版だけ (北米)')
     args = ap.parse_args()
 
     if not args.index.exists():
@@ -255,7 +272,9 @@ def main() -> int:
                 write_manifest(manifest, args.dest, Path(tmp))
         return finish(manifest, args)
 
-    have = list_hashed(args.dest)
+    # thumbs_only: 置いてあるかどうかは縮小版 (t/) で見る
+    have = {('h/' + os.path.basename(t)[:-len('.webp')]) for t in list_dir(args.dest, 't')} if args.thumbs_only \
+        else list_hashed(args.dest)
     uploaded, reused, failed = 0, 0, []
     session = requests.Session()
     session.headers['User-Agent'] = 'spsp-ranking (https://spsp.games)'
@@ -265,28 +284,33 @@ def main() -> int:
             stage = Path(tmp) / 'h'
             stage.mkdir()
             with ThreadPoolExecutor(max_workers=args.workers) as ex:
-                results = list(ex.map(lambda it: download(session, it[1]), batch))
+                results = list(ex.map(lambda it: fetch_one(session, it[1], args.thumbs_only), batch))
             new_rows, staged = {}, 0
-            for (tid, url), (body, reason) in zip(batch, results):
+            for (tid, url), (body, thumb, reason) in zip(batch, results):
                 if body is None:
                     failed.append((tid, url, reason))
                     continue
                 ext = os.path.splitext(src_name(url))[1].lower() or '.img'
                 file = f"h/{hashlib.md5(body).hexdigest()}{ext}"
-                if file in have or (stage / file[2:]).exists():
+                # thumbs_only は縮小版の名前 (拡張子なしの MD5) で重複を見る
+                key = os.path.splitext(file)[0] if args.thumbs_only else file
+                out = stage / (thumb_of(file)[2:] if args.thumbs_only else file[2:])
+                if key in have or out.exists():
                     reused += 1
                 else:
-                    (stage / file[2:]).write_bytes(body)
+                    out.write_bytes(thumb if args.thumbs_only else body)
                     staged += 1
                 new_rows[str(tid)] = {'file': file, 'src': src_name(url)}
             if staged:
-                p = rclone(['copy', str(stage), f'{args.dest}/h', '--s3-no-check-bucket',
+                sub, headers = ('t', ['--header-upload', 'Content-Type: image/webp']) if args.thumbs_only else ('h', [])
+                p = rclone(['copy', str(stage), f'{args.dest}/{sub}', '--s3-no-check-bucket',
                             '--transfers', str(max(args.workers, 4)),
-                            '--header-upload', 'Cache-Control: public, max-age=31536000, immutable'])
+                            '--header-upload', 'Cache-Control: public, max-age=31536000, immutable', *headers])
                 if p.returncode != 0:
                     print(f"ERROR: rclone copy に失敗 (rc={p.returncode})", file=sys.stderr)
                     return 1
-                have |= {f"h/{f.name}" for f in stage.iterdir()}
+                have |= ({os.path.splitext('h/' + f.name)[0] for f in stage.iterdir()} if args.thumbs_only
+                         else {f"h/{f.name}" for f in stage.iterdir()})
                 uploaded += staged
             manifest.update(new_rows)
             write_manifest(manifest, args.dest, Path(tmp))
@@ -300,8 +324,9 @@ def main() -> int:
 
 
 def finish(manifest: dict, args) -> int:
-    """縮小版と部門の表 (元画像を送り終えてから)。"""
-    sync_thumbs(manifest, args.dest, args.thumb_limit)
+    """縮小版と部門の表 (元画像を送り終えてから)。thumbs_only は縮小版をその場で作っているので作り足さない (元画像が無い)。"""
+    if not args.thumbs_only:
+        sync_thumbs(manifest, args.dest, args.thumb_limit)
     write_events(manifest, args.tournaments or args.index.with_name('tournaments.jsonl'), args.dest)
     return 0
 
