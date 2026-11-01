@@ -18,6 +18,9 @@
 //   "7,22,37,52 * * * *"   → 日本の軽量ビルド (only_if_changed: data-Japan の先頭が前回出したときと同じなら数十秒で終わる)。
 //                            軽量の取得 (0,15,30,45 分) の後。定時のビルド (20 分) とは分をずらす。
 //                            「build jp」で始まる回 (run-name) が終わっていなければ送らない (北米の長い回は見ない)
+//                            同じ cron の UTC 9 時 (JST 18 時 20 分) だけ、北米の予備の定期取得 (smash_database
+//                            download-north-america、push_data)。北米担当者の更新が 48 時間無いときだけ取得して
+//                            data-North_America に入れる (判定はワークフロー側。2026-11-02)。onlyUtcHours で時を絞る
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
 // 起動を送る前に、同じワークフローで STALE_QUEUED_MIN 分以上 queued のまま (= GitHub がランナーを割り当てていない) の
@@ -36,6 +39,8 @@ const JOBS = {
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
+    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { push_data: "true" },
+      onlyUtcHours: [9], skipIfBusy: true },
   ],
   "7,22,37,52 * * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2", only_if_changed: "true" },
@@ -145,6 +150,7 @@ export default {
     if (!jobs) throw new Error(`unknown cron ${event.cron}`);
     if (!env.JP_ACTIONS_DISPATCH_TOKEN) throw new Error("secret JP_ACTIONS_DISPATCH_TOKEN is not set");
     for (const job of jobs) {
+      if (job.onlyUtcHours && !job.onlyUtcHours.includes(new Date(event.scheduledTime).getUTCHours())) continue;
       if (job.skipBeforeFull && isJustBeforeFull(event.scheduledTime)) { console.log(`skip ${job.workflow} quick: just before the full run`); continue; }
       await cancelStaleQueued(job, env.JP_ACTIONS_DISPATCH_TOKEN);
       if (job.preemptTitle) await cancelPreempted(job, env.JP_ACTIONS_DISPATCH_TOKEN);
