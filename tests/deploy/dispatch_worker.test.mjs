@@ -44,3 +44,13 @@ test("quick run is not sent just before the full run", async () => {
   await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 9, 27, 3, 15) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
   assert.ok(calls.some((c) => c.endsWith("/dispatches")));
 });
+
+test("NA fallback download is sent only at UTC 9 (with the JP build)", async () => {
+  let calls = fakeGitHub([]);
+  await worker.scheduled({ cron: "20 3,9,12,15,21 * * *", scheduledTime: Date.UTC(2026, 10, 2, 9, 20) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches",
+                           "POST tosakazu/smash_database/actions/workflows/download-north-america.yml/dispatches"]);
+  calls = fakeGitHub([]);
+  await worker.scheduled({ cron: "20 3,9,12,15,21 * * *", scheduledTime: Date.UTC(2026, 10, 2, 12, 20) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches"]);
+});
