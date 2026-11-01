@@ -18,10 +18,11 @@
 //   "7,22,37,52 * * * *"   → 日本の軽量ビルド (only_if_changed: data-Japan の先頭が前回出したときと同じなら数十秒で終わる)。
 //                            軽量の取得 (0,15,30,45 分) の後。定時のビルド (20 分) とは分をずらす。
 //                            「build jp」で始まる回 (run-name) が終わっていなければ送らない (北米の長い回は見ない)
-//                            同じ cron の UTC 9 時 (JST 18 時 20 分) だけ、北米の予備の定期取得 (smash_database
-//                            download-north-america、push_data)。北米担当者の更新が 48 時間無いときだけ取得して
-//                            data-North_America に入れる (判定はワークフロー側。2026-11-02)。onlyUtcHours で時を絞る
-//                            取り直す期間は日本と同じ 14 日、取得は 120 分まで (残りは翌日の続き)
+//                            同じ cron の UTC 9 時 (JST 18 時 20 分) だけ、北米の取得の通常の回 (smash_database
+//                            download-north-america auto: 過去 14 日を取り直す、取得は 120 分まで)。北米担当者のサーバと
+//                            並行して、Actions 専用の data-North_America-auto に入れる (2026-11-02)。onlyUtcHours で時を絞る。
+//                            終わっていない北米の軽量の回は取り消してから送る
+//   "*/15 * * * *" の北米分 → 北米の取得の軽量の回 (auto quick)。北米の回 (通常・軽量) が終わっていなければ送らない
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
 // 起動を送る前に、同じワークフローで STALE_QUEUED_MIN 分以上 queued のまま (= GitHub がランナーを割り当てていない) の
@@ -37,11 +38,12 @@ const JOBS = {
   "*/15 * * * *": [
     { repo: "tosakazu/smash_database", workflow: "download-japan.yml", inputs: { push: "true", quick: "true" }, skipIfBusy: true,
       skipBeforeFull: true },
+    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { auto: "true", quick: "true" }, skipIfBusy: true },
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
-    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { push_data: "true", days: "14", dl_minutes: "120" },
-      onlyUtcHours: [9], skipIfBusy: true },
+    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { auto: "true", days: "14", dl_minutes: "120" },
+      onlyUtcHours: [9], preemptTitle: "download-north-america auto quick" },
   ],
   "7,22,37,52 * * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2", only_if_changed: "true" },
