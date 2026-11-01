@@ -21,6 +21,7 @@
 //                            同じ cron の UTC 9 時 (JST 18 時 20 分) だけ、北米の予備の定期取得 (smash_database
 //                            download-north-america、push_data)。北米担当者の更新が 48 時間無いときだけ取得して
 //                            data-North_America に入れる (判定はワークフロー側。2026-11-02)。onlyUtcHours で時を絞る
+//                            取り直す期間は日本と同じ 14 日、取得は 120 分まで (残りは翌日の続き)
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
 // 起動を送る前に、同じワークフローで STALE_QUEUED_MIN 分以上 queued のまま (= GitHub がランナーを割り当てていない) の
@@ -39,7 +40,7 @@ const JOBS = {
   ],
   "20 3,9,12,15,21 * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2" } },
-    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { push_data: "true" },
+    { repo: "tosakazu/smash_database", workflow: "download-north-america.yml", inputs: { push_data: "true", days: "14", dl_minutes: "120" },
       onlyUtcHours: [9], skipIfBusy: true },
   ],
   "7,22,37,52 * * * *": [
