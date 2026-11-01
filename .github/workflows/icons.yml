@@ -1,0 +1,77 @@
+# 北米の大会アイコンを R2 に置く (2026-11-01 作成)。手で起動する。
+#
+# smash_database の data-North_America にある tournament_images.jsonl (大会 ID → start.gg のアイコン URL) のうち、
+# まだ置いていない大会のアイコンを start.gg から取り、縮小版 (96px の WebP) だけを r2:spsp-data/images/tournament/na/ に置く
+# (deploy/sync_tournament_images.py --thumbs-only)。北米は大会が 15 万あり、元画像まで置くと 30 GB 近くになるので元画像は置かない。
+# 日本はビルドの [5.6/5] が毎回同じことをする (元画像も置く、images/tournament/)。
+# 初回は 10 万枚を超えるので、1 回で終わらなければもう一度起動する (途中まで送った分は対応表に残り、次の回は続きから)。
+name: icons
+run-name: "icons na${{ inputs.limit && format(' limit {0}', inputs.limit) || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 今回取る最大の大会数 (空 = 全部)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spsp-icons-na
+  cancel-in-progress: false
+
+jobs:
+  icons:
+    # R2 の鍵は Environment production (main ブランチからだけ使える)
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - name: スクリプト (このリポジトリ)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 大会アイコンの記録 (smash_database の data-North_America、2 ファイルだけ)
+        uses: actions/checkout@v4
+        with:
+          repository: tosakazu/smash_database
+          ref: data-North_America
+          path: smash_db_tournament
+          fetch-depth: 1
+          sparse-checkout: |
+            data/startgg/North_America/tournament_images.jsonl
+            data/startgg/North_America/tournaments.jsonl
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: venv (画像を扱う分だけ、本番と同じ版)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q $(grep -iE '^(requests|pillow|charset.normalizer|idna|urllib3|certifi)==' requirements.lock.txt)
+
+      - name: rclone を用意
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: bash deploy/ci/prepare.sh na
+
+      - name: 北米の大会アイコン (縮小版だけ)
+        env:
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          args=(--index smash_db_tournament/data/startgg/North_America/tournament_images.jsonl
+                --dest r2:spsp-data/images/tournament/na --thumbs-only --workers 8)
+          if [ -n "$LIMIT" ]; then
+            [[ "$LIMIT" =~ ^[0-9]+$ ]] || { echo "::error::limit は数字"; exit 1; }
+            args+=(--limit "$LIMIT")
+          fi
+          .venv/bin/python deploy/sync_tournament_images.py "${args[@]}"
