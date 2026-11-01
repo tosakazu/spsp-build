@@ -40,12 +40,12 @@ test("quick run is not sent just before the full run", async () => {
   assert.equal(isJustBeforeFull(Date.UTC(2026, 9, 27, 4, 0)), false);
   const calls = fakeGitHub([]);
   await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 9, 27, 3, 0) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls.filter((c) => c.includes("download-japan")), []);   // (the NA quick run is still sent)
   await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 9, 27, 3, 15) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
   assert.ok(calls.some((c) => c.endsWith("/dispatches")));
 });
 
-test("NA fallback download is sent only at UTC 9 (with the JP build)", async () => {
+test("NA full download is sent only at UTC 9 (with the JP build)", async () => {
   let calls = fakeGitHub([]);
   await worker.scheduled({ cron: "20 3,9,12,15,21 * * *", scheduledTime: Date.UTC(2026, 10, 2, 9, 20) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
   assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches",
@@ -53,4 +53,14 @@ test("NA fallback download is sent only at UTC 9 (with the JP build)", async () 
   calls = fakeGitHub([]);
   await worker.scheduled({ cron: "20 3,9,12,15,21 * * *", scheduledTime: Date.UTC(2026, 10, 2, 12, 20) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
   assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches"]);
+});
+
+test("NA quick download every 15 min, not while an NA run is unfinished", async () => {
+  let calls = fakeGitHub([]);
+  await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 10, 2, 10, 15) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/smash_database/actions/workflows/download-japan.yml/dispatches",
+                           "POST tosakazu/smash_database/actions/workflows/download-north-america.yml/dispatches"]);
+  calls = fakeGitHub([{ id: 9, status: "in_progress", display_title: "download-north-america auto", created_at: new Date().toISOString() }]);
+  await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 10, 2, 10, 15) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), []);   // the fake lists the same run for both workflows
 });
