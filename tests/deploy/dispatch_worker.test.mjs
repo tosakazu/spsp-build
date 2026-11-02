@@ -64,3 +64,14 @@ test("NA quick download every 15 min, not while an NA run is unfinished", async 
   await worker.scheduled({ cron: "*/15 * * * *", scheduledTime: Date.UTC(2026, 10, 2, 10, 15) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
   assert.deepEqual(calls.filter((c) => c.startsWith("POST")), []);   // the fake lists the same run for both workflows
 });
+
+test("NA icons are sent with the JP light build, not while an icons run is unfinished", async () => {
+  let calls = fakeGitHub([]);
+  await worker.scheduled({ cron: "7,22,37,52 * * * *", scheduledTime: Date.UTC(2026, 10, 2, 10, 22) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches",
+                           "POST tosakazu/spsp-build/actions/workflows/icons.yml/dispatches"]);
+  calls = fakeGitHub([{ id: 8, status: "in_progress", display_title: "icons na auto", created_at: new Date().toISOString() }]);
+  await worker.scheduled({ cron: "7,22,37,52 * * * *", scheduledTime: Date.UTC(2026, 10, 2, 10, 22) }, { JP_ACTIONS_DISPATCH_TOKEN: "t" });
+  // the fake lists the same run for both workflows: the JP build only looks at "build jp…" runs, so it is still sent
+  assert.deepEqual(calls.filter((c) => c.startsWith("POST")), ["POST tosakazu/spsp-build/actions/workflows/build.yml/dispatches"]);
+});

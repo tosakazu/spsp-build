@@ -23,6 +23,8 @@
 //                            並行して、Actions 専用の data-North_America-auto に入れる (2026-11-02)。onlyUtcHours で時を絞る。
 //                            終わっていない北米の軽量の回は取り消してから送る
 //   "*/15 * * * *" の北米分 → 北米の取得の軽量の回 (auto quick)。北米の回 (通常・軽量) が終わっていなければ送らない
+//   "7,22,37,52 * * * *" の北米分 → 北米の大会アイコン (spsp-build icons.yml、only_if_changed: data-North_America-auto の
+//                            先頭が前回置いたときと同じなら何もしない)。前の回が終わっていなければ送らない (2026-11-02)
 // 北米のビルドは定期実行しない (データが揃うまで、2026-09-29 ユーザー判断)。
 //
 // 起動を送る前に、同じワークフローで STALE_QUEUED_MIN 分以上 queued のまま (= GitHub がランナーを割り当てていない) の
@@ -48,6 +50,7 @@ const JOBS = {
   "7,22,37,52 * * * *": [
     { repo: "tosakazu/spsp-build", workflow: "build.yml", inputs: { region: "jp", deploy: "r2", only_if_changed: "true" },
       skipIfBusy: true, busyTitlePrefix: "build jp" },
+    { repo: "tosakazu/spsp-build", workflow: "icons.yml", inputs: { only_if_changed: "true" }, skipIfBusy: true },
   ],
 };
 
