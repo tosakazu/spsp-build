@@ -1,12 +1,14 @@
-# 北米の大会アイコンを R2 に置く (2026-11-01 作成)。手で起動する。
+# 北米の大会アイコンを R2 に置く (2026-11-01 作成)。
+# 2026-11-02 から dispatch Worker (deploy/ci/dispatch-worker) が 15 分ごとに起動する (日本の軽量ビルドと同じ枠、前の回が
+# 終わっていなければ送らない)。データ (data-North_America-auto の先頭) が前回置いたときと同じなら何もしないで終わる。
 #
-# smash_database の data-North_America にある tournament_images.jsonl (大会 ID → start.gg のアイコン URL) のうち、
+# smash_database の data-North_America-auto (Actions の北米の取得が入れるブランチ、担当者の data-North_America も取り込む) にある tournament_images.jsonl (大会 ID → start.gg のアイコン URL) のうち、
 # まだ置いていない大会のアイコンを start.gg から取り、縮小版 (96px の WebP) だけを r2:spsp-data/images/tournament/na/ に置く
 # (deploy/sync_tournament_images.py --thumbs-only)。北米は大会が 15 万あり、元画像まで置くと 30 GB 近くになるので元画像は置かない。
 # 日本はビルドの [5.6/5] が毎回同じことをする (元画像も置く、images/tournament/)。
 # 初回は 10 万枚を超えるので、1 回で終わらなければもう一度起動する (途中まで送った分は対応表に残り、次の回は続きから)。
 name: icons
-run-name: "icons na${{ inputs.limit && format(' limit {0}', inputs.limit) || '' }}"
+run-name: "icons na${{ inputs.limit && format(' limit {0}', inputs.limit) || '' }}${{ inputs.only_if_changed && ' auto' || '' }}"
 
 on:
   workflow_dispatch:
@@ -15,6 +17,10 @@ on:
         description: 今回取る最大の大会数 (空 = 全部)
         type: string
         default: ''
+      only_if_changed:
+        description: データが前回と同じなら何もしない (定期の起動)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,11 +41,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 大会アイコンの記録 (smash_database の data-North_America、2 ファイルだけ)
+      - name: 大会アイコンの記録 (smash_database の data-North_America-auto、2 ファイルだけ)
         uses: actions/checkout@v4
         with:
           repository: tosakazu/smash_database
-          ref: data-North_America
+          ref: data-North_America-auto
           path: smash_db_tournament
           fetch-depth: 1
           sparse-checkout: |
@@ -48,15 +54,6 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: venv (画像を扱う分だけ、本番と同じ版)
-        run: |
-          python -m venv .venv
-          .venv/bin/pip install -q $(grep -iE '^(requests|pillow|charset.normalizer|idna|urllib3|certifi)==' requirements.lock.txt)
-
       - name: rclone を用意
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -64,7 +61,33 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: bash deploy/ci/prepare.sh na
 
+      # 前回置いたときのデータの版 (r2:.../na/source.txt) と同じなら、以降を飛ばす
+      - name: データが変わったか
+        id: changed
+        env:
+          ONLY_IF_CHANGED: ${{ inputs.only_if_changed }}
+        run: |
+          sha=$(git -C smash_db_tournament rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          prev=$(rclone cat r2:spsp-data/images/tournament/na/source.txt 2>/dev/null || true)
+          if [ "$ONLY_IF_CHANGED" = "true" ] && [ "$prev" = "$sha" ]; then
+            echo "データは前回と同じ ($sha) — 何もしない"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.changed.outputs.skip != 'true'
+        with:
+          python-version: '3.13'
+
+      - name: venv (画像を扱う分だけ、本番と同じ版)
+        if: steps.changed.outputs.skip != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q $(grep -iE '^(requests|pillow|charset.normalizer|idna|urllib3|certifi)==' requirements.lock.txt)
+
       - name: 北米の大会アイコン (縮小版だけ)
+        if: steps.changed.outputs.skip != 'true'
         env:
           LIMIT: ${{ inputs.limit }}
         run: |
@@ -75,3 +98,13 @@ jobs:
             args+=(--limit "$LIMIT")
           fi
           .venv/bin/python deploy/sync_tournament_images.py "${args[@]}"
+
+      # 全部終わったときだけ版を書く (上限で打ち切られた回は書かないので、次の回がまた続きをやる)
+      - name: 置いたデータの版を記録
+        if: steps.changed.outputs.skip != 'true' && inputs.limit == ''
+        env:
+          SHA: ${{ steps.changed.outputs.sha }}
+        run: |
+          printf '%s' "$SHA" > source.txt
+          rclone copyto source.txt r2:spsp-data/images/tournament/na/source.txt --s3-no-check-bucket \
+            --header-upload 'Cache-Control: no-store'
