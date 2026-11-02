@@ -69,7 +69,7 @@ jobs:
         run: |
           sha=$(git -C smash_db_tournament rev-parse HEAD)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          prev=$(rclone cat r2:spsp-data/images/tournament/na/source.txt 2>/dev/null || true)
+          prev=$("$HOME/bin/rclone" cat r2:spsp-data/images/tournament/na/source.txt 2>/dev/null || true)
           if [ "$ONLY_IF_CHANGED" = "true" ] && [ "$prev" = "$sha" ]; then
             echo "データは前回と同じ ($sha) — 何もしない"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -106,5 +106,5 @@ jobs:
           SHA: ${{ steps.changed.outputs.sha }}
         run: |
           printf '%s' "$SHA" > source.txt
-          rclone copyto source.txt r2:spsp-data/images/tournament/na/source.txt --s3-no-check-bucket \
+          "$HOME/bin/rclone" copyto source.txt r2:spsp-data/images/tournament/na/source.txt --s3-no-check-bucket \
             --header-upload 'Cache-Control: no-store'
