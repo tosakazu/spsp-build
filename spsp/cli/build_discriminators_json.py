@@ -21,19 +21,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # リポジトリ�
 from spsp.paths import SITE_DIR, USERS_JSONL as USERS_T, USERS_JSONL_USERDB as USERS_U  # noqa: E402
 from spsp.data_loader import _resolve_merge_chains  # noqa: E402
 from spsp.derived import load_user_merges  # noqa: E402
+from spsp import index_table  # noqa: E402
 
 
 def load_discs(path):
     m = {}
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            uid, disc = d.get('user_id'), d.get('startgg_discriminator')
-            if uid is not None and disc:
-                m[int(uid)] = disc
+    if not index_table.exists(path):
+        raise FileNotFoundError(str(path))
+    for line in index_table.iter_lines(path):   # 1 ファイルか users/<n>.jsonl (分割後)
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        uid, disc = d.get('user_id'), d.get('startgg_discriminator')
+        if uid is not None and disc:
+            m[int(uid)] = disc
     return m
 
 

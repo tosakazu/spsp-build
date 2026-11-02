@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 
 from spsp.paths import REPO, EVENTS_ROOT, USERS_JSONL  # noqa: F401  (再 export: tjpr_cascade 等が使う)
+from spsp import index_table  # noqa: E402
 from spsp.skiplog import skipped
 
 
@@ -63,21 +64,18 @@ def jjpr_point(num_entrants: int, place: int, days_elapsed: float) -> float:
 # ── users.jsonl (旧 eval/jjpr_v3.py) ──
 def load_users() -> dict[int, dict]:
     idx: dict[int, dict] = {}
-    if not USERS_JSONL.exists():
-        return idx
-    with USERS_JSONL.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except Exception as e:
-                skipped('users.jsonl の行が読めない', f'{e}')
-                continue
-            uid = d.get("user_id")
-            if uid is not None:
-                idx[int(uid)] = d
+    for line in index_table.iter_lines(USERS_JSONL):   # 1 ファイルか users/<n>.jsonl (分割後)
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception as e:
+            skipped('users.jsonl の行が読めない', f'{e}')
+            continue
+        uid = d.get("user_id")
+        if uid is not None:
+            idx[int(uid)] = d
     return idx
 
 

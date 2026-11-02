@@ -23,6 +23,8 @@ from pathlib import Path
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from spsp import index_table  # noqa: E402  (tournaments.jsonl は tournaments/<n>.jsonl に分割されていることがある)
 DEFAULT_TOURNAMENTS = ROOT / 'smash_db_tournament/data/startgg/Japan/tournaments.jsonl'
 INDEX_URL = 'https://data.spsp.games/images/tournament/index.json'
 CURRENT_URL = 'https://data.spsp.games/jp/data/event_icons.json'
@@ -32,21 +34,22 @@ def build(tournaments: Path, index: dict) -> dict:
     files: list[str] = []
     pos: dict[str, int] = {}
     ev: dict[str, int] = {}
-    with open(tournaments, encoding='utf-8') as f:
-        for line in f:
-            if not line.strip():
-                continue
-            t = json.loads(line)
-            ent = index.get(str(t.get('tournament_id')))
-            if not ent or not ent.get('file'):
-                continue
-            name = str(ent['file']).removeprefix('h/')
-            if name not in pos:
-                pos[name] = len(files)
-                files.append(name)
-            for e in t.get('events') or []:
-                if e.get('event_id') is not None:
-                    ev[str(e['event_id'])] = pos[name]
+    if not index_table.exists(tournaments):
+        raise FileNotFoundError(str(tournaments))
+    for line in index_table.iter_lines(tournaments):
+        if not line.strip():
+            continue
+        t = json.loads(line)
+        ent = index.get(str(t.get('tournament_id')))
+        if not ent or not ent.get('file'):
+            continue
+        name = str(ent['file']).removeprefix('h/')
+        if name not in pos:
+            pos[name] = len(files)
+            files.append(name)
+        for e in t.get('events') or []:
+            if e.get('event_id') is not None:
+                ev[str(e['event_id'])] = pos[name]
     return {'f': files, 'e': ev}
 
 

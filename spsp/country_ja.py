@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from spsp.paths import USERS_JSONL as _USERS_JSONL
+from spsp import index_table
 
 def country_ja(name: str | None) -> str | None:
     """英語国名 → 日本語国名 (表の定義元は smash_database の scripts/Japan/country.py。derive.py が users.jsonl の全ての
@@ -36,16 +37,17 @@ def load_country_map() -> dict[int, str]:
     if _country_map is None:
         m: dict[int, str] = {}
         try:
-            with open(_USERS_JSONL, encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        d = json.loads(line)
-                    except Exception:
-                        continue
-                    uid = d.get('user_id')
-                    country = d.get('country')
-                    if uid is not None and country:
-                        m[int(uid)] = country
+            if not index_table.exists(_USERS_JSONL):
+                raise FileNotFoundError(str(_USERS_JSONL))
+            for line in index_table.iter_lines(_USERS_JSONL):   # 1 ファイルか users/<n>.jsonl (分割後)
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                uid = d.get('user_id')
+                country = d.get('country')
+                if uid is not None and country:
+                    m[int(uid)] = country
         except Exception as e:
             print(f"[WARN] country users.jsonl read failed: {e}", flush=True)
         _country_map = m

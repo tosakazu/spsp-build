@@ -49,6 +49,8 @@ from urllib.parse import urlsplit
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from spsp import index_table  # noqa: E402  (tournaments.jsonl は tournaments/<n>.jsonl に分割されていることがある)
 DEFAULT_INDEX = ROOT / 'smash_db_tournament/data/startgg/Japan/tournament_images.jsonl'
 DEFAULT_DEST = f"r2:{os.environ.get('R2_BUCKET', 'spsp-data')}/images/tournament"
 MANIFEST = 'index.json'
@@ -204,28 +206,27 @@ def sync_thumbs(manifest: dict, dest: str, limit: int | None) -> int:
 
 def write_events(manifest: dict, tournaments: Path, dest: str) -> None:
     """部門 ID → 縮小版の表 (縮小版がある大会だけ)。"""
-    if not tournaments.exists():
+    if not index_table.exists(tournaments):
         print(f"[images] {tournaments} が無い — 部門の表は書かない")
         return
     have = list_dir(dest, 't')
     files: list[str] = []
     pos: dict[str, int] = {}
     ev: dict[str, int] = {}
-    with open(tournaments, encoding='utf-8') as f:
-        for line in f:
-            if not line.strip():
-                continue
-            rec = json.loads(line)
-            row = manifest.get(str(rec.get('tournament_id')))
-            if not row or thumb_of(row['file']) not in have:
-                continue
-            t = thumb_of(row['file'])
-            if t not in pos:
-                pos[t] = len(files)
-                files.append(t)
-            for e in rec.get('events') or []:
-                if e.get('event_id') is not None:
-                    ev[str(e['event_id'])] = pos[t]
+    for line in index_table.iter_lines(tournaments):
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        row = manifest.get(str(rec.get('tournament_id')))
+        if not row or thumb_of(row['file']) not in have:
+            continue
+        t = thumb_of(row['file'])
+        if t not in pos:
+            pos[t] = len(files)
+            files.append(t)
+        for e in rec.get('events') or []:
+            if e.get('event_id') is not None:
+                ev[str(e['event_id'])] = pos[t]
     with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
         out = Path(tmp) / EVENTS
         out.write_text(json.dumps({'v': 1, 'files': files, 'e': dict(sorted(ev.items(), key=lambda kv: int(kv[0])))},
