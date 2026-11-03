@@ -1,7 +1,8 @@
-"""smash_database の索引ファイル (users.jsonl / tournaments.jsonl) を読む口。
+"""smash_database の索引ファイル (users.jsonl / tournaments.jsonl / tournament_images.jsonl) を読む口。
 
 GitHub は 100 MiB を超えるファイルを受け付けないので、smash_database では地域ごとに
 users.jsonl → users/<user_id // 500000>.jsonl、tournaments.jsonl → tournaments/<tournament_id // 100000>.jsonl
+(tournament_images.jsonl も同じ区切りで tournament_images/<n>.jsonl)
 に分けられることがある (smash_database issue #106、docs/data_model.md の「Shards」)。
 行の中身は 1 ファイルのときと同じ。ディレクトリがあればその <n>.jsonl を n の小さい順に全部、無ければ 1 ファイルを読む。
 両方あるのは壊れた状態なので止める。ファイルをまたぐ行の順は 1 ファイルのときと違うので、id で引くこと。

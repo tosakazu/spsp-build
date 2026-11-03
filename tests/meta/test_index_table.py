@@ -11,6 +11,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'deploy'))
 from spsp import index_table  # noqa: E402
 import build_event_icons as B  # noqa: E402
+import sync_tournament_images as S  # noqa: E402
 
 
 def u(uid):
@@ -48,7 +49,20 @@ def test_event_icons_from_split_tournaments():
         assert out == {'f': ['a.png', 'b.png'], 'e': {'10': 0, '20': 1}}, out
 
 
+def test_tournament_images_from_split_index():
+    with tempfile.TemporaryDirectory() as d:
+        rec = lambda t, url: json.dumps({'tournament_id': t, 'url': url, 'width': 1, 'height': 1}) + '\n'
+        single = Path(d, 'a', 'tournament_images.jsonl'); single.parent.mkdir()
+        single.write_text(rec(3, 'u3') + rec(120_000, None) + rec(949_759, 'u9'))
+        split = Path(d, 'b', 'tournament_images.jsonl'); (split.parent / 'tournament_images').mkdir(parents=True)
+        (split.parent / 'tournament_images' / '0.jsonl').write_text(rec(3, 'u3'))
+        (split.parent / 'tournament_images' / '1.jsonl').write_text(rec(120_000, None))
+        (split.parent / 'tournament_images' / '9.jsonl').write_text(rec(949_759, 'u9'))
+        assert S.load_index(single) == S.load_index(split) == {3: 'u3', 120_000: None, 949_759: 'u9'}
+
+
 if __name__ == '__main__':
     test_single_and_split_read_the_same_lines()
     test_event_icons_from_split_tournaments()
+    test_tournament_images_from_split_index()
     print('ok')
