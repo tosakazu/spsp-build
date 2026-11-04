@@ -10,7 +10,12 @@
 // 書き出し (store のキー。R2 では live/<地域>/ の下):
 //   index.json             {"v","updated_at","events":[概要…],"players":{"<start.gg user id>":[event_id…]}}
 //   events/<event_id>.json 部門: フェーズ・プール (start.gg のブラケット URL)、参加者 (シード・順位)、セット (ラウンド・スコア・キャラ)
-//   _state.json            次の回が使うもの (部門ごとの start.gg の updatedAt・取り直した時刻・セットの続き)
+//   _state.json            次の回が使うもの (部門ごとの start.gg の updatedAt・取り直した時刻・セットの続き・構造を取ったブロック)
+//   struct/<pg>.json       ブロック (phaseGroup) の構造 (2026-11-05)。開始したブロックごとに 1 回だけ取る (結果報告が start.gg の障害中に
+//                          次の試合を計算する: spsp-web worker/src/api/bracket_engine.ts)。試合のつながり (不戦勝の試合も)・勝ったとき / 負けたときの順位・
+//                          次のフェーズのどのシードに入るか (winnerProgressionSeed / loserProgressionSeed)・シード (前のフェーズのどこから来るか)。
+//                          取り直すのは、ブラケットが作り直された (知らない試合 ID が出た) ときと、ブロックが終わったとき (通過先を確かめる) だけ
+//   struct/e<event_id>.json 部門のブロック → 構造を取った時刻 (読む側はこれを見て変わったブロックだけ読む)
 //
 // 1 回あたりの問い合わせ: 大会一覧 (部門の state / updatedAt 込み) を数ページ。中身を取り直すのは、updatedAt が動いた部門と、
 // REFRESH_MAX_AGE_SEC 以上取り直していない部門だけ (updatedAt が試合の報告で動かない場合の保険)。取り直しは
@@ -35,6 +40,10 @@ export const REFRESH_MAX_AGE_SEC = 290;  // 5 分ごとの回で毎回取り直�
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
 export const MAX_REQUESTS_PER_RUN = 70;
+
+export const STRUCT_VERSION = 1;
+export const STRUCT_KEEP_SEC = 10 * 86400;    // 構造を残す期間 (結果報告の受付は最長 8 日)
+export const STRUCT_MAX_PER_RUN = 12;         // 1 回に構造を取るブロックの数 (残りは次の回)
 
 export class FetchError extends Error {}
 
@@ -77,6 +86,24 @@ const SETS_QUERY = `query LiveSets($eid: ID!, $after: Timestamp, $page: Int!, $p
         slots { prereqType prereqId prereqPlacement entrant { id } standing { stats { score { value } } } }
         games { orderNum winnerId selections { entrant { id } character { id } } }
       }
+    }
+  }
+}`;
+
+const STRUCT_SETS_QUERY = `query LiveStructSets($pg: ID!, $page: Int!, $perPage: Int!) {
+  phaseGroup(id: $pg) {
+    sets(page: $page, perPage: $perPage, sortType: STANDARD, filters: {hideEmpty: false, showByes: true}) {
+      pageInfo { totalPages }
+      nodes { id round identifier wPlacement lPlacement winnerProgressionSeed { id } loserProgressionSeed { id } slots { prereqType prereqId prereqPlacement } }
+    }
+  }
+}`;
+
+const STRUCT_SEEDS_QUERY = `query LiveStructSeeds($pg: ID!, $page: Int!, $perPage: Int!) {
+  phaseGroup(id: $pg) {
+    seeds(query: {page: $page, perPage: $perPage}) {
+      pageInfo { totalPages }
+      nodes { id seedNum groupSeedNum entrant { id } progressionSource { originPlacement originOrder originPhaseGroup { id } } }
     }
   }
 }`;
@@ -440,6 +467,57 @@ function summary(doc, tour) {   // index.json の 1 件
   };
 }
 
+// ---- ブロックの構造 (2026-11-05) ----
+const idOrNull = (v) => (v == null ? null : String(v));
+
+/** 構造の 1 ブロック分を取る。type = フェーズの bracketType */
+export async function fetchStruct(gql, pg, meta, now) {
+  const sets = await fetchAllNodes(gql, STRUCT_SETS_QUERY, { pg }, ["phaseGroup", "sets"], 60);
+  const seeds = await fetchAllNodes(gql, STRUCT_SEEDS_QUERY, { pg }, ["phaseGroup", "seeds"], 100);
+  return {
+    v: STRUCT_VERSION, pg: String(pg), event_id: meta.event_id, phase_id: meta.phase_id, type: meta.type || null, group_state: meta.state ?? null, fetched_at: now,
+    // [試合 ID, round, 記号, 勝ったときの順位, 負けたときの順位, 勝者の次のシード, 敗者の次のシード, [[枠の種類, 前の ID, 1 勝者 / 2 敗者] × 2]]
+    sets: sets.map((x) => [String(x.id), x.round ?? null, x.identifier ?? null, x.wPlacement ?? null, x.lPlacement ?? null,
+      idOrNull(x.winnerProgressionSeed?.id), idOrNull(x.loserProgressionSeed?.id),
+      (x.slots || []).slice(0, 2).map((sl) => [sl?.prereqType ?? null, idOrNull(sl?.prereqId), sl?.prereqPlacement ?? null])]),
+    // [シード ID, ブロックのシード順, 出場者 ID, [元のブロック, 順位, 同じ順位の中の順番] | null]
+    seeds: seeds.map((x) => [String(x.id), x.groupSeedNum ?? x.seedNum ?? null, idOrNull(x.entrant?.id),
+      x.progressionSource?.originPhaseGroup?.id != null ? [String(x.progressionSource.originPhaseGroup.id), x.progressionSource.originPlacement ?? null, x.progressionSource.originOrder ?? null] : null]),
+  };
+}
+
+/** 構造を取る / 取り直すブロック。docs = 今回書いた部門。rec = _state.json の struct (pg → { at, n, st, eid })。
+ *  開始した (state 2 か 3) で、速報のセットが仮の id でないブロック。取り直し = 速報に構造に無い試合 ID が出た (作り直し) か、ブロックが終わった */
+export async function structWork(store, docs, rec) {
+  const out = [];
+  for (const doc of docs) {
+    const ids = new Map();   // pg → 速報の試合 ID (仮でないもの)
+    let preview = new Set();
+    for (const st of doc.sets || []) {
+      const pg = String(st.pg);
+      if (String(st.id).startsWith("preview")) { preview.add(pg); continue; }
+      (ids.get(pg) || ids.set(pg, new Set()).get(pg)).add(String(st.id));
+    }
+    for (const ph of doc.phases || []) for (const g of ph.groups || []) {
+      const pg = String(g.id);
+      if (!(g.state === 2 || g.state === 3) || preview.has(pg) || !ids.has(pg)) continue;
+      const r = rec[pg];
+      const live = ids.get(pg);
+      const meta = { pg, event_id: doc.event_id, phase_id: ph.id, type: ph.type, state: g.state };
+      if (!r) { out.push({ ...meta, why: "new" }); continue; }
+      if (g.state === 3 && r.st !== 3) { out.push({ ...meta, why: "completed" }); continue; }
+      if (live.size > (r.n || 0)) {
+        // 速報の試合が増えた: 構造に無い ID があれば作り直された
+        const cur = await store.get(`struct/${pg}.json`);
+        const known = new Set((cur?.sets || []).map((x) => x[0]));
+        if (!cur || [...live].some((id) => !known.has(id))) out.push({ ...meta, why: "rebuilt" });
+        else r.n = live.size;
+      }
+    }
+  }
+  return out;
+}
+
 // 1 回分。store: { get(key) → obj|null, put(key, obj), del(key), list(prefix) → [key] }
 export async function runLive({ gql, store, countryCode = "JP", now = Math.floor(Date.now() / 1000), log = () => {} }) {
   const state = (await store.get("_state.json")) || {};
@@ -447,6 +525,8 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
   const staleSeen = state.stale || {};   // event_id → 閉じ忘れと判定した時刻
   const stale = {};
   const tours = await listTournaments(gql, countryCode, now);
+  const structRec = state.struct || {};
+  const written = [];
   const next = {};
   const work = [];
   let failed = 0;
@@ -491,13 +571,42 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     if (ending) doc.ended_at = now;
     if (!ending && now - lastActivity(ev, doc) > STALE_SEC) { stale[key] = now; continue; }   // 動きが無い ACTIVE (閉じ忘れ)
     await store.put(`events/${key}.json`, doc);
+    written.push(doc);
     const uids = [...new Set(Object.values(doc.entrants).map((e) => e.uid).filter((u) => u != null).map(String))];
     next[key] = { tournament_id: t.id, updated_at: ev.updatedAt, refreshed_at: now, ...(ending ? { ended_at: now } : {}),
                   summary: summary(doc, t), uids };
     log(`${t.name} / ${ev.name}: ${doc.sets.length} sets, ${Object.keys(doc.entrants).length} entrants${ending ? " (ended)" : ""}`);
   }
+  // 開始したブロックの構造 (1 回だけ。作り直し・終わったときは取り直す)
+  let structs = 0;
+  const touched = new Set();
+  try {
+    for (const w of (await structWork(store, written, structRec)).slice(0, STRUCT_MAX_PER_RUN)) {
+      const doc = await fetchStruct(gql, w.pg, w, now);
+      await store.put(`struct/${w.pg}.json`, doc);
+      const prevN = structRec[w.pg]?.n || 0;
+      structRec[w.pg] = { at: now, n: Math.max(prevN, doc.sets.filter((x) => !(x[7] || []).some((sl) => sl[0] === "bye")).length), st: w.state, eid: String(w.event_id) };
+      touched.add(String(w.event_id));
+      structs++;
+      log(`struct ${w.pg} (${w.why}): ${doc.sets.length} sets, ${doc.seeds.length} seeds`);
+    }
+  } catch (e) {
+    if (!(e instanceof BudgetExceeded)) { failed++; log(`struct: ${e.message}`); }
+  }
+  for (const eid of touched) {
+    const groups = {};
+    for (const [pg, r] of Object.entries(structRec)) if (r.eid === eid) groups[pg] = r.at;
+    await store.put(`struct/e${eid}.json`, { v: STRUCT_VERSION, event_id: eid, updated_at: now, groups });
+  }
+  // 古い構造 (STRUCT_KEEP_SEC を過ぎた) を消す
+  for (const [pg, r] of Object.entries(structRec)) {
+    if (now - (r.at || 0) <= STRUCT_KEEP_SEC) continue;
+    await store.del(`struct/${pg}.json`);
+    delete structRec[pg];
+    if (!Object.values(structRec).some((x) => x.eid === r.eid)) await store.del(`struct/e${r.eid}.json`);
+  }
   // 窓から外れた・ENDED_KEEP_SEC を過ぎた部門は消す
-  for (const k of await store.list("events/")) {
+  for (const k of (await store.list("events/"))) {
     const id = k.replace(/^events\//, "").replace(/\.json$/, "");
     if (!next[id]) { await store.del(k); log(`removed ${k}`); }
   }
@@ -510,7 +619,7 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     for (const u of p.uids || []) (players[u] ||= []).push(p.summary.event_id);
   }
   await store.put("index.json", { v: DOC_VERSION, updated_at: now, events, players });
-  await store.put("_state.json", { v: DOC_VERSION, updated_at: now, events: next, stale });
-  log(`tournaments in window ${tours.length}, events ${events.length}, requests ${gql.count ?? "?"}, failed ${failed}, deferred ${deferred}`);
-  return { tournaments: tours.length, events: events.length, failed, deferred };
+  await store.put("_state.json", { v: DOC_VERSION, updated_at: now, events: next, stale, struct: structRec });
+  log(`tournaments in window ${tours.length}, events ${events.length}, structs ${structs}, requests ${gql.count ?? "?"}, failed ${failed}, deferred ${deferred}`);
+  return { tournaments: tours.length, events: events.length, failed, deferred, structs };
 }

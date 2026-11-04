@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded, mergeSets, setRecord,
-  ENDED_KEEP_SEC, STALE_SEC, STALE_RECHECK_SEC, REFRESH_MAX_AGE_SEC,
+  ENDED_KEEP_SEC, STALE_SEC, STALE_RECHECK_SEC, REFRESH_MAX_AGE_SEC, STRUCT_KEEP_SEC,
 } from "../../deploy/live-worker/live.js";
 
 const NOW = 1_800_000_000;
@@ -34,6 +34,9 @@ function fakeGql(tours, ev, { budget = Infinity } = {}) {
       case "LiveEntrants": return { data: { event: { entrants: page(ev.entrants) } } };
       case "LiveSets": return { data: { event: { sets: page(ev.sets.filter((s) => vars.after == null || s.updatedAt > vars.after)) } } };
       case "LiveStandings": return { data: { event: { standings: page(ev.standings) } } };
+      // ブロックの構造 (2026-11-05): ev.struct[pg] があればそれ、無ければ速報のセットから (枠はシード)
+      case "LiveStructSets": return { data: { phaseGroup: { sets: page((ev.struct?.[vars.pg]?.sets) || ev.sets.filter((x) => String(x.phaseGroup.id) === String(vars.pg)).map((x) => ({ id: x.id, round: x.round, identifier: x.identifier, wPlacement: 1, lPlacement: 2, winnerProgressionSeed: null, loserProgressionSeed: null, slots: x.slots.map((sl) => ({ prereqType: "seed", prereqId: "s" + sl.entrant.id, prereqPlacement: null })) }))) } } };
+      case "LiveStructSeeds": return { data: { phaseGroup: { seeds: page((ev.struct?.[vars.pg]?.seeds) || ev.entrants.map((e) => ({ id: "s" + e.id, seedNum: e.initialSeedNum, groupSeedNum: e.initialSeedNum, entrant: { id: e.id }, progressionSource: null }))) } } };
       default: throw new Error(name);
     }
   };
@@ -118,7 +121,8 @@ test("runLive: ACTIVE のスマブラ部門だけ書き、index に選手の uid
   assert.equal(doc.entrants["1"].place_min, 4);   // 残り 4 人 (isFinal の人がいない)
   assert.equal(doc.sets.length, 2);
   assert.equal(doc.tournament_url, "https://www.start.gg/tournament/x");
-  assert.deepEqual(gql.calls.map((c) => c[0]), ["LiveTournaments", "LivePhases", "LiveEntrants", "LiveSets", "LiveStandings"]);
+  // 開始したブロックの構造を 1 回だけ取る
+  assert.deepEqual(gql.calls.map((c) => c[0]), ["LiveTournaments", "LivePhases", "LiveEntrants", "LiveSets", "LiveStandings", "LiveStructSets", "LiveStructSeeds"]);
   const lv = gql.calls[0][1];   // beforeDate は終了予定で効くので、開催中 (終了がまだ先) の大会が落ちないよう先まで取る
   assert.ok(lv.before > NOW && lv.after < NOW, JSON.stringify(lv));
 });
@@ -316,4 +320,50 @@ test("setRecord: 枠の前の試合 (pre) は prereqType が set のときだけ
   ] });
   assert.deepEqual(r.pre, [["109714019", 2], null]);
   assert.deepEqual(setRecord({ id: 6, slots: [] }).pre, []);
+});
+
+test("構造: 開始したブロックは 1 回だけ取り、作り直し (知らない試合 ID) と終わったときだけ取り直す・古いものは消す", async () => {
+  const { tours, ev } = fixture();
+  const store = memStore();
+  await runLive({ gql: fakeGql(tours, ev), store, now: NOW });
+  const st = await store.get("struct/10.json");
+  assert.equal(st.pg, "10");
+  assert.equal(st.type, "DOUBLE_ELIMINATION");
+  assert.deepEqual(st.sets.map((x) => x[0]).sort(), ["1000", "1001"]);
+  assert.deepEqual(st.sets[0][7][0], ["seed", "s1", null]);
+  assert.equal(st.seeds.length, 4);
+  assert.deepEqual(Object.keys((await store.get("struct/e100.json")).groups), ["10"]);
+  // 取り直しの回: 試合が同じなら構造は取らない
+  const g2 = fakeGql(tours, ev);
+  await runLive({ gql: g2, store, now: NOW + REFRESH_MAX_AGE_SEC + 1 });
+  assert.ok(!g2.calls.some((c) => /Struct/.test(c[0])));
+  // ブラケットの作り直し: 知らない試合 ID が出たら取り直す
+  ev.sets.push(set(2000, 1, 2, null, NOW + 400));
+  const g3 = fakeGql(tours, ev);
+  await runLive({ gql: g3, store, now: NOW + 2 * REFRESH_MAX_AGE_SEC + 2 });
+  assert.ok(g3.calls.some((c) => c[0] === "LiveStructSets"));
+  assert.ok((await store.get("struct/10.json")).sets.some((x) => x[0] === "2000"));
+  // ブロックが終わったら 1 回だけ取り直す (通過先を確かめる)
+  ev.phases[0].phaseGroups.nodes[0].state = 3;
+  ev.sets.forEach((x) => { x.updatedAt = NOW + 900; });
+  const g4 = fakeGql(tours, ev);
+  await runLive({ gql: g4, store, now: NOW + 3 * REFRESH_MAX_AGE_SEC + 3 });
+  assert.ok(g4.calls.some((c) => c[0] === "LiveStructSets"));
+  const g5 = fakeGql(tours, ev);
+  await runLive({ gql: g5, store, now: NOW + 4 * REFRESH_MAX_AGE_SEC + 4 });
+  assert.ok(!g5.calls.some((c) => /Struct/.test(c[0])));
+  // STRUCT_KEEP_SEC を過ぎたら消す (部門の速報が消えたあとも、それまでは残す)
+  await runLive({ gql: fakeGql([], ev), store, now: NOW + STRUCT_KEEP_SEC + 10000 });
+  assert.equal(await store.get("struct/10.json"), null);
+  assert.equal(await store.get("struct/e100.json"), null);
+});
+
+test("構造: 仮の id (開始前) のブロックは取らない", async () => {
+  const { tours, ev } = fixture();
+  ev.sets = ev.sets.map((x) => ({ ...x, id: "preview_10_1_" + x.id }));
+  const store = memStore();
+  const g = fakeGql(tours, ev);
+  await runLive({ gql: g, store, now: NOW });
+  assert.ok(!g.calls.some((c) => /Struct/.test(c[0])));
+  assert.equal(await store.get("struct/10.json"), null);
 });
