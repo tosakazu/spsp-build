@@ -41,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 大会アイコンの記録 (smash_database の data-North_America-auto、索引だけ。tournaments は分割後の tournaments/ も)
+      - name: 大会アイコンの記録 (smash_database の data-North_America-auto、索引だけ。分割後の tournaments/ tournament_images/ も)
         uses: actions/checkout@v4
         with:
           repository: tosakazu/smash_database
@@ -50,6 +50,7 @@ jobs:
           fetch-depth: 1
           sparse-checkout: |
             data/startgg/North_America/tournament_images.jsonl
+            data/startgg/North_America/tournament_images/
             data/startgg/North_America/tournaments.jsonl
             data/startgg/North_America/tournaments/
           sparse-checkout-cone-mode: false

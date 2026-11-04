@@ -50,7 +50,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from spsp import index_table  # noqa: E402  (tournaments.jsonl は tournaments/<n>.jsonl に分割されていることがある)
+from spsp import index_table  # noqa: E402  (tournaments.jsonl / tournament_images.jsonl は <名前>/<n>.jsonl に分割されていることがある)
 DEFAULT_INDEX = ROOT / 'smash_db_tournament/data/startgg/Japan/tournament_images.jsonl'
 DEFAULT_DEST = f"r2:{os.environ.get('R2_BUCKET', 'spsp-data')}/images/tournament"
 MANIFEST = 'index.json'
@@ -75,12 +75,12 @@ def src_name(url: str) -> str:
 
 
 def load_index(path: Path) -> dict[int, str | None]:
+    """tournament_images.jsonl (tournament_images/<n>.jsonl に分割されていても同じ)。"""
     out = {}
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                rec = json.loads(line)
-                out[int(rec['tournament_id'])] = rec.get('url')
+    for line in index_table.iter_lines(path):
+        if line.strip():
+            rec = json.loads(line)
+            out[int(rec['tournament_id'])] = rec.get('url')
     return out
 
 
@@ -250,7 +250,7 @@ def main() -> int:
     ap.add_argument('--thumbs-only', action='store_true', help='元画像を置かず縮小版だけ (北米)')
     args = ap.parse_args()
 
-    if not args.index.exists():
+    if not index_table.exists(args.index):
         print(f"[images] {args.index} が無い — 何もしない (smash_database が大会アイコンを記録する前の版)")
         return 0
     index = load_index(args.index)
