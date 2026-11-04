@@ -19,8 +19,12 @@ R2 の置き方 (中身で重複をまとめる。シリーズ大会は同じ画
   アイコンが消えた大会は対応表から外す。対応表は画像を送り終えてから書く (指す先が無い行を作らない)。
 - 使われなくなった画像は消さない。
 - 画像は smash_database には入れない (URL だけ)。画像なしでデータを使う人は何もしなくてよい。
-- ダウンロードに失敗したもの (404 など) は数えて表示し、次回また試す。失敗があっても終了コードは 0。
-  rclone の失敗は 1 (対応表は書かない)。
+- ダウンロードに失敗したものは数えて表示する。失敗があっても終了コードは 0。rclone の失敗は 1 (対応表は書かない)。
+  - 403 / 404 / 410 と縮小版を作れない画像 (= 同じ URL では何度試しても同じ) は failed.json に URL のファイル名と日時を
+    覚え、RETRY_DAYS 日は試さない。主催者が差し替えれば URL が変わるのですぐ試す。取れたら failed.json から消す。
+  - それ以外 (5xx・接続の失敗) は覚えず、次回また試す。
+  r2:spsp-data/images/tournament/failed.json  {"<大会 ID>": {"src": "<start.gg のファイル名>", "reason": "HTTP 403", "at": "<UTC>"}}
+- index.json・events.json・failed.json は中身が変わったときだけ書く (15 分ごとに動くので、同じものを置き直さない)。
 
 縮小版だけのモード (--thumbs-only、北米用。2026-11-01〜):
   元画像は R2 に置かず、落としたその場で縮小版 (t/) を作って送る。北米は大会が 15 万あり、元画像を全部置くと 30 GB 近くになるため。
@@ -34,6 +38,7 @@ R2 の置き方 (中身で重複をまとめる。シリーズ大会は同じ画
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -55,6 +60,8 @@ DEFAULT_INDEX = ROOT / 'smash_db_tournament/data/startgg/Japan/tournament_images
 DEFAULT_DEST = f"r2:{os.environ.get('R2_BUCKET', 'spsp-data')}/images/tournament"
 MANIFEST = 'index.json'
 EVENTS = 'events.json'
+FAILED = 'failed.json'
+RETRY_DAYS = 7   # 同じ URL で 403/404/410 だった大会を、次に試すまでの日数
 THUMB_PX = 96    # 表示は 40〜48px。高解像度の画面で 2 倍
 BATCH = 200   # この件数ごとに R2 へ送り、対応表を書く (途中で止まっても送った分は残る)
 
@@ -84,13 +91,47 @@ def load_index(path: Path) -> dict[int, str | None]:
     return out
 
 
-def load_manifest(dest: str) -> dict[str, dict]:
-    p = rclone(['cat', f'{dest}/{MANIFEST}'], capture_output=True, text=True)
+def read_text(dest: str, name: str) -> str:
+    """R2 の小さなファイルの中身 (無ければ '')。"""
+    p = rclone(['cat', f'{dest}/{name}'], capture_output=True, text=True)
     if p.returncode != 0:
         if 'not found' in p.stderr.lower():
-            return {}
-        raise SystemExit(f"ERROR: {dest}/{MANIFEST} を読めない: {p.stderr.strip()[:300]}")
-    return json.loads(p.stdout) if p.stdout.strip() else {}
+            return ''
+        raise SystemExit(f"ERROR: {dest}/{name} を読めない: {p.stderr.strip()[:300]}")
+    return p.stdout
+
+
+def load_manifest(dest: str) -> dict[str, dict]:
+    text = read_text(dest, MANIFEST)
+    return json.loads(text) if text.strip() else {}
+
+
+def put_text(dest: str, name: str, text: str, tmp: Path, headers: list[str], what: str) -> None:
+    f = tmp / name
+    f.write_text(text, encoding='utf-8')
+    p = rclone(['copyto', str(f), f'{dest}/{name}', '--s3-no-check-bucket', *headers])
+    if p.returncode != 0:
+        raise SystemExit(f"ERROR: {what}を書けない (rc={p.returncode})")
+
+
+# 同じ URL で試しても変わらない失敗 (覚えておいて RETRY_DAYS 日は試さない)
+def permanent(reason: str | None) -> bool:
+    return bool(reason) and (reason in ('HTTP 403', 'HTTP 404', 'HTTP 410') or reason.startswith('縮小版を作れない'))
+
+
+def recently_failed(failed: dict, tid: int, url: str, now: dt.datetime) -> bool:
+    row = failed.get(str(tid))
+    if not row or row.get('src') != src_name(url):
+        return False
+    try:
+        at = dt.datetime.fromisoformat(row['at'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return now - at < dt.timedelta(days=RETRY_DAYS)
+
+
+def failed_text(failed: dict) -> str:
+    return json.dumps(dict(sorted(failed.items(), key=lambda kv: int(kv[0]))), ensure_ascii=False, separators=(',', ':'))
 
 
 def list_hashed(dest: str) -> set[str]:
@@ -131,13 +172,8 @@ def fetch_one(session: requests.Session, url: str, thumbs_only: bool) -> tuple[b
 
 
 def write_manifest(manifest: dict, dest: str, tmp: Path) -> None:
-    f = tmp / MANIFEST
-    f.write_text(json.dumps(dict(sorted(manifest.items(), key=lambda kv: int(kv[0]))), ensure_ascii=False,
-                            separators=(',', ':')), encoding='utf-8')
-    p = rclone(['copyto', str(f), f'{dest}/{MANIFEST}', '--s3-no-check-bucket',
-                '--header-upload', 'Cache-Control: public, max-age=300'])
-    if p.returncode != 0:
-        raise SystemExit(f"ERROR: 対応表を書けない (rc={p.returncode})")
+    text = json.dumps(dict(sorted(manifest.items(), key=lambda kv: int(kv[0]))), ensure_ascii=False, separators=(',', ':'))
+    put_text(dest, MANIFEST, text, tmp, ['--header-upload', 'Cache-Control: public, max-age=300'], '対応表')
 
 
 def thumb_of(file: str) -> str:
@@ -204,12 +240,13 @@ def sync_thumbs(manifest: dict, dest: str, limit: int | None) -> int:
     return made
 
 
-def write_events(manifest: dict, tournaments: Path, dest: str) -> None:
-    """部門 ID → 縮小版の表 (縮小版がある大会だけ)。"""
+def write_events(manifest: dict, tournaments: Path, dest: str, thumbs_only: bool = False) -> None:
+    """部門 ID → 縮小版の表 (縮小版がある大会だけ)。
+    thumbs_only は縮小版を送ってから対応表に足すので、対応表にある大会には縮小版がある (t/ の一覧は取らない)。"""
     if not index_table.exists(tournaments):
         print(f"[images] {tournaments} が無い — 部門の表は書かない")
         return
-    have = list_dir(dest, 't')
+    have = {thumb_of(row['file']) for row in manifest.values()} if thumbs_only else list_dir(dest, 't')
     files: list[str] = []
     pos: dict[str, int] = {}
     ev: dict[str, int] = {}
@@ -227,14 +264,14 @@ def write_events(manifest: dict, tournaments: Path, dest: str) -> None:
         for e in rec.get('events') or []:
             if e.get('event_id') is not None:
                 ev[str(e['event_id'])] = pos[t]
+    text = json.dumps({'v': 1, 'files': files, 'e': dict(sorted(ev.items(), key=lambda kv: int(kv[0])))},
+                      separators=(',', ':'))
+    if text == read_text(dest, EVENTS):
+        print(f"[images] 部門の表: {len(ev)} 部門 / 縮小版 {len(files)} 枚 (変わらないので書かない)")
+        return
     with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
-        out = Path(tmp) / EVENTS
-        out.write_text(json.dumps({'v': 1, 'files': files, 'e': dict(sorted(ev.items(), key=lambda kv: int(kv[0])))},
-                                  separators=(',', ':')), encoding='utf-8')
-        p = rclone(['copyto', str(out), f'{dest}/{EVENTS}', '--s3-no-check-bucket',
-                    '--header-upload', 'Cache-Control: public, max-age=300', '--header-upload', 'Content-Type: application/json'])
-        if p.returncode != 0:
-            raise SystemExit(f"ERROR: 部門の表を書けない (rc={p.returncode})")
+        put_text(dest, EVENTS, text, Path(tmp), ['--header-upload', 'Cache-Control: public, max-age=300',
+                                                 '--header-upload', 'Content-Type: application/json'], '部門の表')
     print(f"[images] 部門の表: {len(ev)} 部門 / 縮小版 {len(files)} 枚")
 
 
@@ -259,18 +296,27 @@ def main() -> int:
     removed = [t for t, url in index.items() if url is None and str(t) in manifest]
     for t in removed:
         del manifest[str(t)]
-    todo = [(t, url) for t, url in sorted(index.items())
+    failed_prev = read_text(args.dest, FAILED)
+    failed_memo: dict[str, dict] = json.loads(failed_prev) if failed_prev.strip() else {}
+    # 対応表に入った大会・アイコンが消えた大会・URL が変わった大会の記録は要らない
+    for t in [t for t, row in failed_memo.items()
+              if t in manifest or not index.get(int(t)) or row.get('src') != src_name(index[int(t)])]:
+        del failed_memo[t]
+    now = dt.datetime.now(dt.timezone.utc)
+    want = [(t, url) for t, url in sorted(index.items())
             if url and manifest.get(str(t), {}).get('src') != src_name(url)]
+    todo = [(t, url) for t, url in want if not recently_failed(failed_memo, t, url, now)]
     print(f"[images] アイコンあり {sum(1 for u in index.values() if u)} 大会 / 対応表 {len(manifest)} / "
-          f"取る {len(todo)} / 外す {len(removed)}", flush=True)
+          f"取る {len(todo)} / 外す {len(removed)} / 前に取れなかったので今回は試さない {len(want) - len(todo)}", flush=True)
     if args.limit is not None:
         todo = todo[:args.limit]
     if args.dry_run:
         return 0
     if not todo:
-        if removed:
-            with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
+        with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
+            if removed:
                 write_manifest(manifest, args.dest, Path(tmp))
+            save_failed(failed_memo, failed_prev, args.dest, Path(tmp))
         return finish(manifest, args)
 
     # thumbs_only: 置いてあるかどうかは縮小版 (t/) で見る
@@ -290,7 +336,10 @@ def main() -> int:
             for (tid, url), (body, thumb, reason) in zip(batch, results):
                 if body is None:
                     failed.append((tid, url, reason))
+                    if permanent(reason):
+                        failed_memo[str(tid)] = {'src': src_name(url), 'reason': reason, 'at': now.isoformat(timespec='seconds')}
                     continue
+                failed_memo.pop(str(tid), None)
                 ext = os.path.splitext(src_name(url))[1].lower() or '.img'
                 file = f"h/{hashlib.md5(body).hexdigest()}{ext}"
                 # thumbs_only は縮小版の名前 (拡張子なしの MD5) で重複を見る
@@ -314,21 +363,30 @@ def main() -> int:
                          else {f"h/{f.name}" for f in stage.iterdir()})
                 uploaded += staged
             manifest.update(new_rows)
-            write_manifest(manifest, args.dest, Path(tmp))
+            if new_rows or (removed and i == 0):
+                write_manifest(manifest, args.dest, Path(tmp))
         print(f"[images] {min(i + BATCH, len(todo))}/{len(todo)} (新しい画像 {uploaded}、既にある画像 {reused}、"
               f"失敗 {len(failed)})", flush=True)
 
     print(f"[images] 完了: 新しい画像 {uploaded} 枚、既にある画像を使った {reused} 大会、失敗 {len(failed)} 件")
     for tid, url, r in failed[:20]:
-        print(f"  失敗 {tid} {r} {url}")
+        print(f"  失敗 {tid} {r} {url}" + (f" (URL が変わるまで {RETRY_DAYS} 日は試さない)" if permanent(r) else ""))
+    with tempfile.TemporaryDirectory(prefix='spsp_img_') as tmp:
+        save_failed(failed_memo, failed_prev, args.dest, Path(tmp))
     return finish(manifest, args)
+
+
+def save_failed(failed_memo: dict, prev_text: str, dest: str, tmp: Path) -> None:
+    text = failed_text(failed_memo)
+    if text != prev_text and (failed_memo or prev_text.strip()):
+        put_text(dest, FAILED, text, tmp, ['--header-upload', 'Cache-Control: no-store'], '取れなかった大会の記録')
 
 
 def finish(manifest: dict, args) -> int:
     """縮小版と部門の表 (元画像を送り終えてから)。thumbs_only は縮小版をその場で作っているので作り足さない (元画像が無い)。"""
     if not args.thumbs_only:
         sync_thumbs(manifest, args.dest, args.thumb_limit)
-    write_events(manifest, args.tournaments or args.index.with_name('tournaments.jsonl'), args.dest)
+    write_events(manifest, args.tournaments or args.index.with_name('tournaments.jsonl'), args.dest, args.thumbs_only)
     return 0
 
 
