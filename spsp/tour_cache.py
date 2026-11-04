@@ -39,7 +39,7 @@ FORMAT = 'spsp-tour-cache/4'
 MANIFEST = '_tourcache.json.gz'
 # 大会ファイルの形・中身の作り方を変えたら上げる (前回までに書いた大会ファイルを全部作り直す)
 # 2: ポイントのベース (tjpr_raw) を当時のレベルで・その大会で使ったキャラ (chars) を足す (2026-10-23)
-DOC_VERSION = 2
+DOC_VERSION = 3   # 3 = DQ で 1 試合もしていない人を除いた順位・SPR・UF (2026-11-04)
 
 
 def enabled() -> bool:

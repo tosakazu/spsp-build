@@ -241,7 +241,7 @@ def build_tournament_doc(
         'startgg_url': meta_t.get('startgg_url'),
         'date': meta_t.get('date'),
         'end_date': meta_t.get('end_date'),
-        'nent': meta_t.get('nent'),
+        'nent': meta_t.get('nent_reg', meta_t.get('nent')),   # 表示用 = start.gg の登録人数 (meta.py の nent_reg)
         'is_weekend': meta_t.get('is_weekend'),
         'is_weekend_real': meta_t.get('is_weekend_real', meta_t.get('is_weekend')),
         'is_smapa': meta_t.get('is_smapa'),
@@ -747,7 +747,8 @@ def build_tournament_summary(t_meta_by_id: dict) -> dict:
             'end_date': m.get('end_date'),
             'name': m['tname'],
             'event': m['ename'],
-            'nent': m['nent'],
+            'nent': m.get('nent_reg', m['nent']),   # 表示用 = start.gg の登録人数。判定は nent_lv (= 試合をした人数)
+            'nent_lv': m['nent'],
             'is_weekend': m['is_weekend'],
             'is_weekend_real': m.get('is_weekend_real', m['is_weekend']),
             'is_smapa': m['is_smapa'],
@@ -899,6 +900,7 @@ def _tour_entry_common_fields(tsum, place, si):
         'name': tsum['name'],
         'event': tsum['event'],
         'nent': tsum['nent'],
+        'nent_lv': tsum.get('nent_lv', tsum['nent']),
         'place': place,
         'seed': si['seed'] if si else None,
         'spr': si['spr'] if si else None,
@@ -1513,7 +1515,7 @@ def _build_top_spr_and_recent(tournament_entries, tj_level, eval_date, passes_le
         e for e in tournament_entries
         if e.get('spr') is not None and e['spr'] > 0
         and e.get('date', '') >= one_year_ago
-        and passes_level(tj_level, e.get('nent'), e.get('is_weekend'))
+        and passes_level(tj_level, e.get('nent_lv', e.get('nent')), e.get('is_weekend'))
     ]
     top_spr = [_slim_tour_entry(e) for e in sorted(
         counted_spr,

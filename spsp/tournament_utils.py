@@ -116,6 +116,9 @@ def filter_dq_no_shows(all_t):
             continue
         filtered = [(p, u) for (p, u) in t.standings if u in played]
         if filtered and len(filtered) < len(t.standings):
+            # 除いた人 (DQ で 1 試合もしていない) を残しておく: start.gg の順位・シードはこの人たちを数えたままなので、
+            # 表示と SPR では実際に試合をした人の中での順位・シードに詰め直す (meta.build_placements_seeds、2026-11-04)
+            t.no_shows = [(p, u) for (p, u) in t.standings if u not in played]
             t.standings = filtered
 
 

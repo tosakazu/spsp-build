@@ -216,8 +216,15 @@ def build_tournament_metadata(all_tournaments, *, tournament_display_name,
         # 最低保証順位) で集計する。優勝者が出たら自動で通常扱い。
         _is_gf_missing, _is_awaiting = resolve_completion_flags(
             _gf_missing_base, _no_champion, t.event_id, _awaiting_ids)
-        # nent: フィルター後の standings 数を使う (DQ 無参加を除外したサイズ)
+        # nent: フィルター後の standings 数を使う (DQ 無参加を除外したサイズ)。レベルなどの判定はこれ
         nent = len(t.standings) or nent_attr or 0
+        # nent_reg: 表示用の人数 = start.gg の登録人数 (DQ で 1 試合もしていない人も含む)。順位・シードは start.gg の数字
+        # (その人たちを数えたまま) なので、表示の人数もそろえる (「12 人中 13 位」にならないように、2026-11-04)
+        # start.gg の参加人数 (attr.json の num_entrants) を基本に。順位表に載らない人 (start.gg のアカウントが無い・つながっていない) も
+        # 数えるので、試合をした人数 + no-show より多いことがある。順位がこれを超えないことも保つ
+        _ns = getattr(t, 'no_shows', None) or []
+        _max_place = max((p for p, _ in list(t.standings) + list(_ns) if p is not None), default=0)
+        nent_reg = max(nent_attr or 0, nent + len({u for _, u in _ns}), _max_place)
         d = dt.datetime.fromtimestamp(t.timestamp).date()
         end_ts = t.end_timestamp if t.end_timestamp is not None else t.timestamp
         end_d = dt.datetime.fromtimestamp(end_ts).date()
@@ -253,6 +260,7 @@ def build_tournament_metadata(all_tournaments, *, tournament_display_name,
         t_meta_by_id[id(t)] = {
             'event_id': eid,
             'nent': nent,
+            'nent_reg': nent_reg,
             'tname': tname or '',
             'ename': ename or '',
             'ts': int(t.timestamp),  # 同日内の順序 (本戦 → 下位クラス) を保持する sort 用
@@ -386,12 +394,18 @@ def build_placements_seeds(all_tournaments):
         placements = placements_per_t.get(tid, {})
         if not placements: continue
         seeds_map = load_event_seeds(t.event_path)
+        # 実際の勝ち (DQ の不戦勝は t.matches に入っていない)。勝ちが 0 なのに不戦勝で進んで SPR がプラスにならないように (2026-11-04)
+        real_wins: dict = {}
+        for m in t.matches:
+            real_wins[m.winner_id] = real_wins.get(m.winner_id, 0) + 1
         per_player: dict = {}
         for u, place in placements.items():
             if place is None or place < 1: continue
             seed = seeds_map.get(u)
             if seed is None: continue
             spr = placement_to_w2w(seed) - placement_to_w2w(place)
+            if spr > 0 and not real_wins.get(u):
+                spr = 0
             per_player[u] = SeedInfo((seed, place, spr))
         t_seed_info[tid] = per_player
 

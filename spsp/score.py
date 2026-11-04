@@ -496,7 +496,7 @@ def _classify_tournament_entry(e):
     place = e.get('place')
     if place is None or place < 1:
         return None
-    nent = e.get('nent') or 0
+    nent = e.get('nent_lv', e.get('nent')) or 0   # 判定は試合をした人数 (表示の nent は登録人数)
     is_wk_e = e.get('is_weekend')
     if place > 2:
         if (e.get('tjpr_w') or 0) <= 0: return None
@@ -554,7 +554,7 @@ def _tournament_achievements(tournament_entries):
         cls = _classify_tournament_entry(e)
         if cls is None: continue
         b, class_suffix = cls
-        nent_e = e.get('nent') or 0
+        nent_e = e.get('nent_lv', e.get('nent')) or 0
         t_name = e.get('name') or ''
         # ≥100 nent は series 統合しない (= 個別 badge)
         if nent_e >= 100:
@@ -574,7 +574,7 @@ def _tournament_achievements(tournament_entries):
             entries = buckets[bucket_name]
             count = len(entries)
             suffix = f' ×{count}' if count > 1 else ''
-            max_nent = max(int(en.get('nent') or 0) for en in entries)
+            max_nent = max(int(en.get('nent_lv', en.get('nent')) or 0) for en in entries)
             base_priority = max_nent * 10 + _TIER_PRIORITY_BASE[bucket_name] + (count - 1) * 50
             priority = int(base_priority * _series_lower_penalty(entries))
             s_name, s_cls = series_parts[s]
@@ -593,7 +593,7 @@ def _tournament_achievements(tournament_entries):
         t_name = e.get('name') or ''
         name_base = tournament_individual_label(t_name)
         label_base = f"{name_base} {class_suffix}" if class_suffix else name_base
-        base_priority = (e.get('nent') or 0) * 10 + _TIER_PRIORITY_BASE[b]
+        base_priority = (e.get('nent_lv', e.get('nent')) or 0) * 10 + _TIER_PRIORITY_BASE[b]
         # 下位クラス / 制限大会 priority 下げる
         if e.get('is_lower_class') or e.get('is_restricted'):
             base_priority = int(base_priority * 0.2)
@@ -1663,7 +1663,7 @@ def _record_losers_runs(t, tid, meta_t, per_player,
                         'tournament_name': meta_t.get('tname'),
                         'date': meta_t.get('date'),
                         'place': (per_player.get(uid_lr) or {}).get('place'),
-                        'nent': meta_t.get('nent'),
+                        'nent': meta_t.get('nent_reg', meta_t.get('nent')),   # 表示用 (start.gg の登録人数)
                     }
                 d[uid_lr] = entry
 
