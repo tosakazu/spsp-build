@@ -24,7 +24,7 @@
 // セットの label はビルドの試合と同じ「ブラケットの位置」(Winners TOP 64 / Losers TOP 12 / Grand Final / B-Winners TOP 8 / 総当たり …)。
 // 計算は smash_database の redownload_matches_v2.compute_global_top_x と同じ (bracketLabels)。
 
-export const DOC_VERSION = 2;   // 2: セットに label (ブラケットの位置)・bye、フェーズに seeds
+export const DOC_VERSION = 3;   // 2: セットに label (ブラケットの位置)・bye、フェーズに seeds  3: セットに pre (枠の前の試合、2026-11-04)
 export const GAME_ID = 1386;
 export const LOWER_CLASS_NAME_PAT = /[BCDEＢＣＤＥ]\s*クラス|(?<![A-Za-z])[BCDE][\s_\-]*class(?![A-Za-z])/i;
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
@@ -74,7 +74,7 @@ const SETS_QUERY = `query LiveSets($eid: ID!, $after: Timestamp, $page: Int!, $p
       nodes {
         id state round fullRoundText identifier winnerId startedAt completedAt updatedAt totalGames
         phaseGroup { id }
-        slots { prereqType entrant { id } standing { stats { score { value } } } }
+        slots { prereqType prereqId prereqPlacement entrant { id } standing { stats { score { value } } } }
         games { orderNum winnerId selections { entrant { id } character { id } } }
       }
     }
@@ -245,6 +245,8 @@ export function setRecord(s) {
     e: slots.map((sl) => sl?.entrant?.id ?? null),
     score: slots.map((sl) => sl?.standing?.stats?.score?.value ?? null),
     winner: s.winnerId ?? null, best_of: s.totalGames ?? null, bye: slots.some((sl) => sl?.prereqType === "bye"),
+    // 枠の前の試合 [試合 ID, 1 = 勝者 / 2 = 敗者] (相手が未定のときの候補に使う。DOC_VERSION 3)
+    pre: slots.map((sl) => (sl?.prereqType === "set" && sl.prereqId != null ? [String(sl.prereqId), sl.prereqPlacement ?? null] : null)),
     started_at: s.startedAt ?? null, completed_at: s.completedAt ?? null, updated_at: s.updatedAt ?? null,
     games: games.length ? games : null,
   };

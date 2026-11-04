@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded, mergeSets,
+  worstPlacement, isTargetEvent, inWindow, runLive, applyStandings, bracketLabels, placementBucket, BudgetExceeded, mergeSets, setRecord,
   ENDED_KEEP_SEC, STALE_SEC, STALE_RECHECK_SEC, REFRESH_MAX_AGE_SEC,
 } from "../../deploy/live-worker/live.js";
 
@@ -307,4 +307,13 @@ test("runLive: 前回の仮の id のセットは、本物のセットが来た�
   ev.sets = [set(1000, 1, 4, 1, later - 30), { ...set(1001, 2, 3, null, NOW - 120), identifier: "B" }];   // 仮の id は差分に出てこない
   await runLive({ gql: fakeGql(tours, ev), store, now: later });
   assert.deepEqual((await store.get("events/100.json")).sets.map((s) => String(s.id)), ["1000", "1001"]);
+});
+
+test("setRecord: 枠の前の試合 (pre) は prereqType が set のときだけ [ID, 1 勝者 / 2 敗者]", () => {
+  const r = setRecord({ id: 5, slots: [
+    { prereqType: "set", prereqId: 109714019, prereqPlacement: 2, entrant: { id: 1 } },
+    { prereqType: "seed", prereqId: 777, prereqPlacement: 3, entrant: null },
+  ] });
+  assert.deepEqual(r.pre, [["109714019", 2], null]);
+  assert.deepEqual(setRecord({ id: 6, slots: [] }).pre, []);
 });
