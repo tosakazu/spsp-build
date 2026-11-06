@@ -320,7 +320,7 @@ export function applyStandings(doc, standings) {
 }
 
 // ---- ブラケットの位置 (smash_database scripts/common/redownload_matches_v2.py の移植。数え方を変えるときは両方) ----
-const CLASS_PHASE_RE = /\b[B-J][- ]?class\b|[B-JＢ-Ｊ][- ]?クラス/i;
+const CLASS_PHASE_RE = /\b[B-J][- ]?class\b|[B-JＢ-Ｊ][- ]?クラス/i;   // 下位クラスは B〜J (2026-11-06)
 const BT_LABEL = { ROUND_ROBIN: "総当たり", SWISS: "スイスドロー", MATCHMAKING: "レート戦" };
 const isBracket = (type) => !type || type === "DOUBLE_ELIMINATION" || type === "SINGLE_ELIMINATION";
 
@@ -385,7 +385,9 @@ export function bracketLabels(doc) {
     }
     i.eff = rounds.filter((r) => !i.playIn.has(r));
     i.offset = i.letter ? 0 : cumulative;
-    if (!i.letter) { cumulative += i.eff.length; mainOrder.push(i); }
+    // 2 つ目以降の本戦のフェーズの勝者側 TOP N はそのフェーズ自身の大きさ (最初の有効ラウンドの試合数 × 2)。前のフェーズの足し上げは
+    // 並列のブラケットや勝者側決勝の前で切れるプールでずれる (smash_database #119 own_size、2026-11-06)
+    if (!i.letter) { if (mainOrder.length && i.eff.length) i.ownCap = 2 * i.counts[i.eff[0]]; cumulative += i.eff.length; mainOrder.push(i); }
   }
   // 本戦のフェーズから次のフェーズへ進む人数 (最後のフェーズは 2 = 決勝の 2 人)。敗者側決勝で負けた人はその次の順位
   mainOrder.forEach((i, k) => { i.advance = mainOrder[k + 1]?.seeds || 2; });
@@ -404,9 +406,10 @@ export function bracketLabels(doc) {
     if (s.round > 0) {
       if (!i) return null;
       if (se && !(cap > 1)) return null;
-      if (i.playIn.has(s.round)) return `${pre}Winners TOP ${se ? placementBucket(p.seeds || 0) || cap * 2 : cap * 2}`;
+      if (i.playIn.has(s.round)) return `${pre}Winners TOP ${se ? placementBucket(p.seeds || 0) || cap * 2 : (i.ownCap ? i.ownCap * 2 : cap * 2)}`;
       const idx = i.eff.indexOf(s.round);
       if (idx < 0) return null;
+      if (i.ownCap) return `${pre}Winners TOP ${Math.max(2, Math.floor(i.ownCap / 2 ** idx))}`;
       return `${pre}Winners TOP ${Math.max(2, Math.floor(cap / 2 ** (i.offset + idx)))}`;
     }
     if (s.round < 0) {
