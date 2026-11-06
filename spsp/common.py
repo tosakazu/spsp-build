@@ -576,7 +576,7 @@ def _bracket_order_key_parts(label, round_text, top_x):
     rt = (round_text or '').lower()
     # class prefix を剥がして本体で side 判定 (= B-Winners TOP 64 → Winners 扱い).
     body = label
-    if len(body) >= 2 and body[0] in ('B', 'C', 'D', 'E') and body[1] == '-':
+    if len(body) >= 2 and 'B' <= body[0] <= 'J' and body[1] == '-':   # 下位クラスは B〜J (2026-11-06 に F〜J を足した)
         body = body[2:]
     if 'grand final' in rt or body == 'Grand Final':
         side = 3

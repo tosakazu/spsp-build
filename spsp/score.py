@@ -504,10 +504,10 @@ def _classify_tournament_entry(e):
         if not is_wk_e: return None
     ev_name = e.get('event') or ''
     t_name = e.get('name') or ''
-    class_match = _re.search(r'([BCDEＢＣＤＥ])\s*クラス', ev_name)
+    class_match = _re.search(r'([B-JＢ-Ｊ])\s*クラス', ev_name)   # 下位クラスは B〜J
     class_suffix = None
     if class_match:
-        cl = class_match.group(1).translate(str.maketrans('ＢＣＤＥ', 'BCDE'))
+        cl = class_match.group(1).translate(str.maketrans('ＢＣＤＥＦＧＨＩＪ', 'BCDEFGHIJ'))
         class_suffix = f'{cl}クラス'
     elif e.get('is_lower_class') and ('カジュアル' in ev_name or 'カジュアル' in t_name):
         class_suffix = 'カジュアル'
