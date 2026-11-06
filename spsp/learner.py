@@ -1626,20 +1626,21 @@ def _gc_games(m):
 # (self.__rd**2) の箇所に self.__rating**2 を使っている。本番は一貫してバグ込みで
 # 学習しているため既定は従来どおり。SPSP_G2_FFIX=1 で仕様準拠版に差し替えて
 # 精度影響を比較する (実験用)。
+from glicko2 import Player as _G2LibPlayer
+
+
+class _PlayerFFixed(_G2LibPlayer):
+    """仕様準拠の _f。学習状態を pickle で保存するのでモジュールの外から見える場所に置く (関数の中だと保存で落ちる)。"""
+    def _f(self, x, delta, v, a):
+        ex = math.exp(x)
+        phi2 = self._Player__rd ** 2
+        num1 = ex * (delta ** 2 - phi2 - v - ex)
+        denom1 = 2 * ((phi2 + v + ex) ** 2)
+        return (num1 / denom1) - ((x - a) / (self._tau ** 2))
+
+
 def _g2_player_cls():
-    from glicko2 import Player
-    if not _S.g2_ffix:
-        return Player
-
-    class _PlayerFFixed(Player):
-        def _f(self, x, delta, v, a):
-            ex = math.exp(x)
-            phi2 = self._Player__rd ** 2
-            num1 = ex * (delta ** 2 - phi2 - v - ex)
-            denom1 = 2 * ((phi2 + v + ex) ** 2)
-            return (num1 / denom1) - ((x - a) / (self._tau ** 2))
-
-    return _PlayerFFixed
+    return _PlayerFFixed if _S.g2_ffix else _G2LibPlayer
 
 _PEAK_DECAY_T0 = 1514764800  # 2018-01-01 (数値スケール縮小用の基準点)
 _MONTH_SEC = 30.4375 * 86400.0

@@ -83,7 +83,7 @@ from spsp.skiplog import report_skips  # noqa: E402
 
 # 本番構成 (v4/settings.py の既定値)。環境変数は見ない。main() で CLI フラグを反映して確定する。
 # learn / build どちらのフェーズでも eval_bt_lv_shared に明示的に適用する。
-SETTINGS = Settings()
+SETTINGS = Settings(g2_ffix=os.environ.get('SPSP_G2_FFIX') == '1')   # 試算用 (exp/next-fixes): 本番は既定値のまま
 _apply_settings(SETTINGS, lock=True)   # 以後、shim 等からの apply_settings は無視される (設定の固定)
 
 # run_build() に渡す helpers (= eval/ 配下).
@@ -791,7 +791,8 @@ def main():
     if phase == 'snap' and not args.state_in:
         ap.error('--phase snap には --state-in (eval_date まで学習済みの状態) が必要')
     global SETTINGS
-    SETTINGS = Settings(skip_per_match=args.light, keep_no_match=args.keep_no_match)
+    SETTINGS = Settings(skip_per_match=args.light, keep_no_match=args.keep_no_match,
+                        g2_ffix=os.environ.get('SPSP_G2_FFIX') == '1')   # 試算用 (exp/next-fixes)
     _apply_settings(SETTINGS, lock=True)
 
     t_total = time.time()

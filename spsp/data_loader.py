@@ -467,7 +467,8 @@ def load_all_tournaments(
     #      以前はディレクトリの読み出し順 (ファイルシステム依存) だったので、それをそのまま残して順位を変えない。
     #   2. 表に無い大会 (以後の新規) は決定的な規則: 本戦 (親イベント) → 下位クラスの仮想大会 (class_phases/*_virtual)
     #      → event_id → path。仮想大会は event_id が負なので単純な event_id 順だと本戦より先に来てしまう。
-    legacy = _load_legacy_order()
+    # SPSP_LEGACY_TOUR_ORDER=0 なら凍結表を使わず全大会を 2. の規則で並べる (来季の切り替え候補、2026-11-06 に試算用に追加)
+    legacy = {} if os.environ.get('SPSP_LEGACY_TOUR_ORDER', '1') == '0' else _load_legacy_order()
     def _order_key(t):
         rel = rel_event_path(t.event_path)   # 凍結表のキー "<地域>/<年>/..." (旧配置でも新配置でも同じ)
         is_virtual = '/class_phases/' in t.event_path
