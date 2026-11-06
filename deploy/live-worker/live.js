@@ -31,7 +31,7 @@
 
 export const DOC_VERSION = 3;   // 2: セットに label (ブラケットの位置)・bye、フェーズに seeds  3: セットに pre (枠の前の試合、2026-11-04)
 export const GAME_ID = 1386;
-export const LOWER_CLASS_NAME_PAT = /[BCDEＢＣＤＥ]\s*クラス|(?<![A-Za-z])[BCDE][\s_\-]*class(?![A-Za-z])/i;
+export const LOWER_CLASS_NAME_PAT = /[B-JＢ-Ｊ]\s*クラス|(?<![A-Za-z])[B-J][\s_\-]*class(?![A-Za-z])/i;   // 下位クラスは B〜J
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
 export const GRACE_AFTER_END_SEC = 12 * 3600;  // … で、endAt (無ければ開始) から 12 時間以内
 export const STALE_SEC = 6 * 3600;             // ACTIVE のまま 6 時間動きが無い部門は載せない (主催者が閉じ忘れたもの)
@@ -320,13 +320,13 @@ export function applyStandings(doc, standings) {
 }
 
 // ---- ブラケットの位置 (smash_database scripts/common/redownload_matches_v2.py の移植。数え方を変えるときは両方) ----
-const CLASS_PHASE_RE = /\b[B-E][- ]?class\b|[B-EＢＣＤＥ][- ]?クラス/i;
+const CLASS_PHASE_RE = /\b[B-J][- ]?class\b|[B-JＢ-Ｊ][- ]?クラス/i;
 const BT_LABEL = { ROUND_ROBIN: "総当たり", SWISS: "スイスドロー", MATCHMAKING: "レート戦" };
 const isBracket = (type) => !type || type === "DOUBLE_ELIMINATION" || type === "SINGLE_ELIMINATION";
 
 function classLetter(name) {
   const m = (name || "").match(CLASS_PHASE_RE);
-  return m ? m[0][0].replace(/[ＡＢＣＤＥ]/, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).toUpperCase() : null;
+  return m ? m[0][0].replace(/[Ａ-Ｊ]/, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).toUpperCase() : null;
 }
 // プレイインを除いた実質の大きさ (2 の累乗ならそのまま、そうでなければ下の 2 の累乗)
 function capacityOf(n) {
