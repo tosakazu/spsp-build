@@ -86,9 +86,10 @@ test("isTargetEvent: スマブラ SP と下位クラスの名前", () => {
   assert.ok(!isTargetEvent({ videogame: { id: 1 }, name: "Ultimate Singles" }));
 });
 
-test("inWindow: 始まっていて、終わりから 12 時間以内", () => {
+test("inWindow: 開始予定の 6 時間前から、終わりから 12 時間以内", () => {
   assert.ok(inWindow({ startAt: NOW - 10, endAt: NOW + 10 }, NOW));
-  assert.ok(!inWindow({ startAt: NOW + 10, endAt: NOW + 100 }, NOW));
+  assert.ok(inWindow({ startAt: NOW + 600, endAt: NOW + 3600 }, NOW));   // 予定より早く始めた大会 (渋谷達 #149、19:00 予定を 18:50 に自動開始)
+  assert.ok(!inWindow({ startAt: NOW + 7 * 3600, endAt: NOW + 9 * 3600 }, NOW));
   assert.ok(!inWindow({ startAt: NOW - 20 * 3600, endAt: NOW - 13 * 3600 }, NOW));
 });
 

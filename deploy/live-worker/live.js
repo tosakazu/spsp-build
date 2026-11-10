@@ -34,6 +34,7 @@ export const GAME_ID = 1386;
 export const LOWER_CLASS_NAME_PAT = /[B-JＢ-Ｊ]\s*クラス|(?<![A-Za-z])[B-J][\s_\-]*class(?![A-Za-z])/i;   // 下位クラスは B〜J
 export const WINDOW_BEFORE_SEC = 3 * 86400;   // 3 日前までに始まった大会 (複数日の大会)
 export const GRACE_AFTER_END_SEC = 12 * 3600;  // … で、endAt (無ければ開始) から 12 時間以内
+export const EARLY_START_SEC = 6 * 3600;      // 開始予定の 6 時間前からも見る (予定より早くブラケットを始める大会・SPSP の自動開始。載るのは ACTIVE の部門だけ、2026-11-10)
 export const STALE_SEC = 6 * 3600;             // ACTIVE のまま 6 時間動きが無い部門は載せない (主催者が閉じ忘れたもの)
 export const STALE_RECHECK_SEC = 1800;         // 閉じ忘れと判定した部門を見直す間隔 (updatedAt は試合の報告で動かないので、セットの更新を見て決める)
 export const REFRESH_MAX_AGE_SEC = 290;  // 5 分ごとの回で毎回取り直す (updatedAt は試合の報告で動かないので、実質これが更新間隔。5 分ちょうどだと時刻の揺れで 1 回おきになる)
@@ -142,7 +143,7 @@ export function isTargetEvent(ev) {
 export function inWindow(t, now) {
   const start = t.startAt || 0;
   const end = t.endAt || start;
-  return start <= now && now - Math.max(end, start) <= GRACE_AFTER_END_SEC && now - start <= WINDOW_BEFORE_SEC;
+  return start - EARLY_START_SEC <= now && now - Math.max(end, start) <= GRACE_AFTER_END_SEC && now - start <= WINDOW_BEFORE_SEC;
 }
 
 // start.gg の GraphQL を呼ぶ (間隔をあける・429 は待って再試行・複雑すぎるエラーは呼び出し側で perPage を下げる)
