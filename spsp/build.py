@@ -677,6 +677,18 @@ def run_build(cfg: RunConfig) -> int:
                  'startgg_discriminator': d.get('startgg_discriminator')} for u, d in load_users().items()}
 
     tournament_summary = build_tournament_summary(t_meta_by_id)
+    # 大会シール (spsp/stickers.py)。t_meta は学習台帳のハッシュに入るので触らず、表示用の summary にだけ置く
+    # 判定で落ちてもビルドは止めない (シールが出ないだけ。理由は skiplog に残す)
+    try:
+        from spsp.stickers import compute_stickers
+        _stk = compute_stickers(all_tournaments, t_meta_by_id)
+        for _tid, _by_uid in _stk.items():
+            if _tid in tournament_summary:
+                tournament_summary[_tid]['stickers'] = _by_uid
+        print(f"  stickers: {len(_stk)} events, {sum(len(v) for v in _stk.values())} player-events", flush=True)
+    except Exception as _e:   # noqa: BLE001
+        from spsp.skiplog import skipped
+        skipped('シール: 判定に失敗 (シールなしで続ける)', repr(_e))
 
     spr_upper_val, spr_neg_val, uf_upper_val, uf_lost_val, pct = build_radar(
         player_tour_history,
