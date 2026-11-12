@@ -889,9 +889,9 @@ def _resolve_tour_seed_wl_dq(
     return (si, wins_t, losses_t, is_dq)
 
 
-def _tour_entry_common_fields(tsum, place, si):
+def _tour_entry_common_fields(tsum, place, si, uid=None):
     """tournament_entries の共通フィールド (event/date/place/seed/is_* 系)."""
-    return {
+    rec = {
         'event_id': tsum.get('event_id'),
         'parent_event_id': tsum.get('parent_event_id'),
         'class_letter': tsum.get('class_letter'),
@@ -914,6 +914,11 @@ def _tour_entry_common_fields(tsum, place, si):
         'is_lower_class': tsum.get('is_lower_class', False),
         'is_random_seed': tsum.get('is_random_seed', False),   # シードが強さ順でない (spr は null)
     }
+    # 大会シールの一番上の色 (rainbow / gold / silver / normal、spsp/stickers.py)。配らない大会・人はキーなし
+    st = (tsum.get('stickers') or {}).get(int(uid)) if uid is not None else None
+    if st:
+        rec['sticker'] = st
+    return rec
 
 
 def _sum_counts(d) -> int:
@@ -1049,7 +1054,7 @@ def _build_tournament_entries(
         cur_elo_after, peak_elo_after = _bt_after_elo(tid, bt_hist_by_tid)
         jjpr_pts = _lookup_jjpr_pts_for_tid(uid, tid, jjpr_contribs)
         si, wins_t, losses_t, is_dq = _resolve_tour_seed_wl_dq(uid, tid, tsum, place, **seed_wl_kwargs)
-        rec = _tour_entry_common_fields(tsum, place, si)
+        rec = _tour_entry_common_fields(tsum, place, si, uid)
         rec.update({
             'tjpr_lv': tj_level,
             'tjpr_raw': c['raw_points'],
@@ -1082,7 +1087,7 @@ def _build_tournament_entries(
         cur_elo_after, peak_elo_after = _bt_after_elo(tid, bt_hist_by_tid)
         jjpr_pts = _lookup_jjpr_pts_for_tid(uid, tid, jjpr_contribs)
         si, wins_t, losses_t, is_dq = _resolve_tour_seed_wl_dq(uid, tid, tsum, place, **seed_wl_kwargs)
-        rec = _tour_entry_common_fields(tsum, place, si)
+        rec = _tour_entry_common_fields(tsum, place, si, uid)
         rec.update({
             'tjpr_lv': 0,
             'tjpr_raw': 0.0, 'tjpr_age': 1.0, 'tjpr_pos': 0.0, 'tjpr_w': 0.0,
@@ -1114,7 +1119,7 @@ def _build_tournament_entries(
         seen_tids.add(tid)
         place = tour_value(placements_per_t, tid, uid)
         si = tour_value(t_seed_info, tid, uid)
-        rec = _tour_entry_common_fields(tsum, place, si)
+        rec = _tour_entry_common_fields(tsum, place, si, uid)
         rec.update({
             'tjpr_lv': 1,
             'tjpr_raw': c['raw_points'],
