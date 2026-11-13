@@ -58,6 +58,17 @@ def test_events():
         # 予選で負けた人が境目より上 (予選・本線の作りでない) → 1 つの山として扱う
         assert S.pool_border(d, {**place, 5: 3}) is None
 
+        # 古い大会: 試合に phase_order が無い。人数の多いフェーズを予選として同じ境目になる (はしこうさんの問い合わせ 2026-11-14)
+        old = [{**{k: v for k, v in r.items() if k != 'phase_order'}, 'phase_num_seeds': 8 if r['phase_id'] == 10 else 4} for r in rows]
+        json.dump({'data': old}, open(os.path.join(d, 'matches.json'), 'w'))
+        assert S.pool_border(d, place) == 4
+        assert S.event_stickers(t, meta) == got
+        # phases.json に順番があればそちらを使う (人数の並びと逆でも)
+        rev = [{**r, 'phase_num_seeds': 4 if r['phase_id'] == 10 else 8} for r in old]
+        json.dump({'data': rev}, open(os.path.join(d, 'matches.json'), 'w'))
+        json.dump({'phases': [{'id': 10, 'order': 1}, {'id': 20, 'order': 2}]}, open(os.path.join(d, 'phases.json'), 'w'))
+        assert S.pool_border(d, place) == 4
+
     # 1 つの山 (phase group 1 つ) は matches.json を読まない。試合をしていない人 (DQ だけ) には配らない
     standings = [(i, i) for i in range(1, 10)]
     t = NS(standings=standings, event_path='/nonexistent', event_id=2,
