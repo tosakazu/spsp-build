@@ -63,10 +63,14 @@ def test_events():
         json.dump({'data': old}, open(os.path.join(d, 'matches.json'), 'w'))
         assert S.pool_border(d, place) == 4
         assert S.event_stickers(t, meta) == got
-        # phases.json に順番があればそちらを使う (人数の並びと逆でも)
-        rev = [{**r, 'phase_num_seeds': 4 if r['phase_id'] == 10 else 8} for r in old]
+        # start.gg の順番は見ない: 予選が本戦の後ろに並んでいる大会 (DELTA#8・スマ納め など) でも人数の多い方が予選
+        rev = [{**r, 'phase_order': 2 if r['phase_id'] == 10 else 1} for r in old]
         json.dump({'data': rev}, open(os.path.join(d, 'matches.json'), 'w'))
-        json.dump({'phases': [{'id': 10, 'order': 1}, {'id': 20, 'order': 2}]}, open(os.path.join(d, 'phases.json'), 'w'))
+        json.dump({'phases': [{'id': 10, 'order': 2}, {'id': 20, 'order': 1}]}, open(os.path.join(d, 'phases.json'), 'w'))
+        assert S.pool_border(d, place) == 4
+        # 人数が入っていなければ、そのフェーズで試合をした人数で並べる
+        bare = [{k: v for k, v in r.items() if k != 'phase_num_seeds'} for r in rev]
+        json.dump({'data': bare}, open(os.path.join(d, 'matches.json'), 'w'))
         assert S.pool_border(d, place) == 4
 
     # 1 つの山 (phase group 1 つ) は matches.json を読まない。試合をしていない人 (DQ だけ) には配らない

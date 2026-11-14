@@ -43,32 +43,29 @@ def pool_lines(n_qualified: int, border: int) -> tuple[int, int]:
     return min(gold, border), border
 
 
-def phase_orders(event_path: str, rows: list[dict]) -> dict:
-    """{phase_id: フェーズの順番}。
+def phase_orders(rows: list[dict]) -> dict:
+    """{phase_id: フェーズの順番}。人数 (phase_num_seeds) の多いフェーズが先。
 
-    試合の phase_order は 2026 年の途中から取得しているので、それより前に取った大会 (全体の約 8 割) には無い
-    (2026-11-14: これを見落としていて、古い大会の予選が全部「1 つの山」扱いになり、予選を抜けても銀が出なかった)。
-    無い大会は phases.json の order、それも無ければ「人数 (phase_num_seeds) の多い順・同数は ID の小さい順」で並べる
-    (phase_order のある約 1,100 大会で、この並べ方と境目が食い違うのは 8 大会)。
+    start.gg の順番 (試合の phase_order・phases.json の order) は使わない。主催者が画面で並べた順で、
+    予選が本戦の後ろに置かれている大会がある (DELTA#7・#8、スマ納め、ITSUKUSHIMA、錦祭 など。
+    予選が最後だと「全員が予選突破」や「予選なし」になる)。しかも試合の phase_order は 2026 年の途中から
+    取得していて、それより前に取った大会 (全体の約 8 割) には無い (2026-11-14: これを見落としていて、
+    古い大会の予選が全部「1 つの山」扱いになり、予選を抜けても銀が出なかった)。
+    全員が出るフェーズ = 予選なので人数で並べる。同数 (全員が本戦に進む大会) は山の多い方が先、それも同じなら ID 順。
     """
-    ids = {m.get('phase_id') for m in rows if m.get('phase_id') is not None}
-    by_match = {m['phase_id']: m['phase_order'] for m in rows
-                if m.get('phase_id') is not None and m.get('phase_order') is not None}
-    if ids and ids <= by_match.keys():
-        return by_match
-    try:
-        with open(Path(event_path) / 'phases.json', 'rb') as f:
-            ph = json.loads(f.read())
-        by_file = {p['id']: p['order'] for p in ph.get('phases') or [] if p.get('order') is not None}
-        if ids and ids <= by_file.keys():
-            return by_file
-    except Exception:
-        pass   # phases.json は無い大会の方が多い
-    seeds = {}
+    seeds: dict = {}
+    groups: dict = {}
+    users: dict = {}
     for m in rows:
-        if m.get('phase_id') is not None:
-            seeds[m['phase_id']] = m.get('phase_num_seeds') or 0
-    ranked = sorted(seeds, key=lambda pid: (-seeds[pid], pid))
+        pid = m.get('phase_id')
+        if pid is None:
+            continue
+        if m.get('phase_num_seeds'):
+            seeds[pid] = m['phase_num_seeds']
+        groups.setdefault(pid, set()).add(m.get('phase_group_id'))
+        users.setdefault(pid, set()).update((m['winner_id'], m['loser_id']))
+    size = {pid: seeds.get(pid) or len(users[pid]) for pid in groups}
+    ranked = sorted(groups, key=lambda pid: (-size[pid], -len(groups[pid]), pid))
     return {pid: i + 1 for i, pid in enumerate(ranked)}
 
 
@@ -76,7 +73,7 @@ def pool_border(event_path: str, place: dict[int, int]) -> int | None:
     """予選が複数の山なら予選突破の境目の順位、そうでなければ None。
 
     フェーズの順番・ID は Match に持たないので matches.json を読み直す (呼ぶのは phase group が 2 つ以上の大会だけ)。
-    順番は phase_orders (古い大会は試合に phase_order が無い)。
+    順番は phase_orders (人数の多いフェーズが先)。
     """
     try:
         with open(Path(event_path) / 'matches.json', 'rb') as f:
@@ -86,7 +83,7 @@ def pool_border(event_path: str, place: dict[int, int]) -> int | None:
         return None
     rows = [m for m in (d if isinstance(d, list) else d.get('data') or [])
             if m.get('winner_id') is not None and m.get('loser_id') is not None]
-    order_of = phase_orders(event_path, rows)
+    order_of = phase_orders(rows)
     rows = [{**m, 'phase_order': order_of[m.get('phase_id')]} for m in rows if order_of.get(m.get('phase_id')) is not None]
     orders = sorted({m['phase_order'] for m in rows})
     if len(orders) < 2:
