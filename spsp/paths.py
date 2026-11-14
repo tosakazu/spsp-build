@@ -52,6 +52,7 @@ AUX_DATA_FILES = (
     "tournaments.json", "series.json", "geo.json", "upcoming.json", "player_prefectures.json", "tournament_prefectures.json",
     "player_subranks.json", "discriminators.json", "last_activity.json", "user_merges.json",
     "character_index.json",  # build_v4_full の overlay が生成
+    "partner_smatch.json",   # スマッチに渡す一覧 (spsp-web の Worker が Bearer トークンつきで返す。build_partner_smatch)
 )
 
 
