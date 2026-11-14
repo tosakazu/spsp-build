@@ -34,6 +34,7 @@ STEPS = [
     ('build_split_views', False),     # data/views/ (ページ用に分けた一覧。player_prefectures・character_index の後)
     ('build_discriminators_json', False),
     ('build_user_merges_json', False),
+    ('build_partner_smatch', False),   # スマッチに渡す一覧 (discriminators・user_merges の後)
 ]
 
 
