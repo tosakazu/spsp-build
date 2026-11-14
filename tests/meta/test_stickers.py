@@ -73,6 +73,16 @@ def test_events():
         json.dump({'data': bare}, open(os.path.join(d, 'matches.json'), 'w'))
         assert S.pool_border(d, place) == 4
 
+        # 全員が本戦に進む大会 (総当たり予選 → 全員で本戦) は予選突破と数えない = 1 つの山
+        allq = [row(1, 2, 1, 10, 100), row(3, 4, 1, 10, 100), row(5, 6, 1, 10, 200), row(7, 8, 1, 10, 200)] + \
+               [row(a, b, 2, 20, 300) for a, b in ((1, 8), (2, 7), (3, 6), (4, 5), (1, 4), (2, 3), (1, 2))]
+        allq = [{**r, 'phase_num_seeds': 8} for r in allq]
+        json.dump({'data': allq}, open(os.path.join(d, 'matches.json'), 'w'))
+        assert S.pool_border(d, place) is None
+        t8 = NS(standings=standings, event_path=d, event_id=3, matches=[mt(r['winner_id'], r['loser_id'], r['phase_group_id']) for r in allq])
+        got8 = S.event_stickers(t8, meta)   # 8 人の 1 つの山: 金 = 2 位まで、銀 = 4 位まで
+        assert got8 == {1: 'rainbow', 3: 'gold', 2: 'silver', 4: 'silver', 5: 'normal', 6: 'normal', 7: 'normal', 8: 'normal'}, got8
+
     # 1 つの山 (phase group 1 つ) は matches.json を読まない。試合をしていない人 (DQ だけ) には配らない
     standings = [(i, i) for i in range(1, 10)]
     t = NS(standings=standings, event_path='/nonexistent', event_id=2,

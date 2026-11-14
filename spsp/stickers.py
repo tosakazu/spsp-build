@@ -13,7 +13,7 @@
     金 = Top 8。予選突破が 8 人未満なら Top 4、4 人未満なら 2 位まで
     銀 = 予選 (フェーズ 1) 突破。境目 = 優勝者と同じ後のフェーズで試合をした人の一番悪い順位
          (= 敗者側からフェーズ 1 を抜けてすぐ負けた人)。予選が 2 段でもフェーズ 1 を抜ければ銀
-  1 つの山 (上以外。予選と本線の順位が食い違う大会もこちら):
+  1 つの山 (上以外。予選と本線の順位が食い違う大会、9 割以上が本戦に進む大会もこちら):
     虹 = 優勝
     金 = 上位 1/4 以内 (最低 2 位まで・最大 Top 8)
     銀 = 48 人以下は上位 1/2 以内 (最大 Top 16)、49 人以上は Top 24
@@ -28,6 +28,7 @@ from spsp.skiplog import skipped
 
 RAINBOW, GOLD, SILVER, NORMAL = 'rainbow', 'gold', 'silver', 'normal'
 MIN_ENTRANTS = 8   # これ未満の大会には配らない (is_small の境目とは別に決める)
+ALL_ADVANCE = 0.9  # 予選を抜けた人がこの割合以上なら「全員が本戦に進む大会」= 1 つの山として扱う (2026-11-14)
 
 
 def single_lines(nent: int) -> tuple[float, float]:
@@ -106,6 +107,8 @@ def pool_border(event_path: str, place: dict[int, int]) -> int | None:
     out = {int(u) for m in first for u in (m['winner_id'], m['loser_id'])} - qualified
     if any(place.get(u, border + 1) <= border for u in out):
         return None   # 予選で負けた人が境目より上 = 予選・本線の作りではない → 1 つの山として扱う
+    if sum(1 for p in place.values() if p <= border) >= ALL_ADVANCE * len(place):
+        return None   # ほぼ全員が本戦に進む (総当たり予選で本戦のシードを決めるだけ、など) → 予選突破とは数えない
     return border
 
 
