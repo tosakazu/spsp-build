@@ -81,6 +81,10 @@ def load_users() -> dict[int, dict]:
 
 def format_display(user_record: dict | None, uid: int) -> str:
     if not user_record:
+        if isinstance(uid, int) and uid < 0:
+            # start.gg のアカウントが無い参加者 (spsp/guests)。名前が無ければ空 (フロントが決まった文言を出す)
+            from spsp import guests as _guests
+            return _guests.name(uid) or ""
         return f"(unknown user_id={uid})"
     prefix = user_record.get("prefix") or ""
     tag = user_record.get("gamer_tag") or "?"

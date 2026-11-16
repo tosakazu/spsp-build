@@ -1386,6 +1386,9 @@ def _build_top_bt_gains(
                 'p_score': getattr(m_ref, 'winner_score', None),  # uid won
                 'o_score': getattr(m_ref, 'loser_score', None),
             })
+        if isinstance(opp_uid_m, int) and opp_uid_m < 0:   # アカウントの無い相手 (上と同じ)
+            entry['opp_uid'] = None
+            entry['opp_guest'] = True
         top_bt_gains.append(entry)
     return top_bt_gains
 
@@ -1461,6 +1464,11 @@ def _build_recent_matches(
                 'o_score': (ls if won else ws),
                 **_common.order_fields(m_ref),   # overlay が並べるのに使って消す
             }
+        if isinstance(opp_uid_m, int) and opp_uid_m < 0:
+            # start.gg のアカウントが無い相手 (spsp/guests): uid は出さない (ページを持たない)。名前は opp_display
+            # (無ければ空)。この行だけ opp_guest を足す
+            rec['opp_uid'] = None
+            rec['opp_guest'] = True
         recent_matches.append(rec)
     return recent_matches
 

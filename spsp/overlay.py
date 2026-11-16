@@ -629,6 +629,8 @@ def make_player_transform(cascade_snapshots: dict, bt_timeline_all: dict,
                 }
                 meta = tour_meta.get(m.get('event_id'), {})
                 entry.update(meta)
+                if m.get('opp_guest'):   # start.gg のアカウントが無い相手 (spsp/guests)
+                    entry['opp_guest'] = True
                 new_gains.append(entry)
             new_gains.sort(key=lambda x: -(x.get('bt_d') or 0))
             rec['top_bt_gains'] = new_gains[:30]

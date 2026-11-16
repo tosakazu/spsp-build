@@ -28,6 +28,7 @@ from typing import Iterator
 
 from spsp.paths import LEGACY_ORDER_PATH as _LEGACY_ORDER_PATH, rel_event_path, REGION  # noqa: E402
 from spsp import derived  # noqa: E402
+from spsp import guests as _guests  # noqa: E402
 _legacy_order_cache = None
 
 
@@ -109,6 +110,10 @@ class Tournament:
     # DAY進出判定用: dq=True の match を別途保持 (= main bracket の DAY X 進出後 DQ を拾うため).
     # (loser_user_id, phase_group_id, phase_group_start_at) のタプル. is_class は除外.
     dq_match_records_main: list[tuple[int, int | None, int | None]] = field(default_factory=list)
+    # start.gg のアカウントが無い参加者との試合 (spsp/guests。その側の uid は負)。matches には入れない:
+    # 参加者の集合・人数・順位の母集団は matches と standings から作るので、そこに負の uid を混ぜないため。
+    # 読むのは、直対評価の学習・勝敗数・選手のページの対戦一覧だけ (それぞれ明示的に足す)
+    guest_matches: list[Match] = field(default_factory=list)
 
 
 def _load_json(path: Path) -> dict | None:
@@ -264,6 +269,7 @@ def iter_tournaments(
         # → 追加の clipping は不要 (試みたが A-class TOP 1536 losers まで切り捨ててしまうため revert).
 
         matches: list[Match] = []
+        guest_matches: list[Match] = []
         dq_player_ids: set[int] = set()
         dq_player_ids_main: set[int] = set()
         dq_player_ids_class: set[int] = set()
@@ -315,8 +321,23 @@ def iter_tournaments(
                         continue
                     wid = m.get("winner_id")
                     lid = m.get("loser_id")
+                    guest = False
                     if wid is None or lid is None:
-                        continue
+                        # 片方だけ start.gg のアカウントが無い試合 (spsp/guests): その参加者をこの試合だけの選手 (負の uid)
+                        # にして、matches とは別の guest_matches に入れる。両方無い・DQ・id が無い試合は今までどおり読まない
+                        if not _guests.ENABLED or (wid is None and lid is None) or m.get("dq"):
+                            continue
+                        gid = _guests.guest_uid(m.get("match_id"))
+                        if gid is None:
+                            continue
+                        nm = m.get("winner_name" if wid is None else "loser_name")
+                        _guests.NAMES[gid] = nm if isinstance(nm, str) and nm else None
+                        m = dict(m)
+                        if wid is None:
+                            wid = m["winner_id"] = gid
+                        else:
+                            lid = m["loser_id"] = gid
+                        guest = True
                     if wid == lid:
                         continue
                     # phase_group_id でクラス bracket 判定 (DQ match / 通常 match 共通)
@@ -344,7 +365,7 @@ def iter_tournaments(
                             if _pgid is not None:
                                 dq_match_records_main.append((lid_int, _pgid, _sa))
                         continue
-                    matches.append(_match_from_row(m, ts, event_dir, is_class_match, sh))
+                    (guest_matches if guest else matches).append(_match_from_row(m, ts, event_dir, is_class_match, sh))
 
         matches.extend(class_rows)   # Challonge の下位クラスの試合 (上で読んだもの。本戦の試合の後ろに足す)
 
@@ -360,6 +381,7 @@ def iter_tournaments(
             dq_player_ids_main=dq_player_ids_main,
             dq_player_ids_class=dq_player_ids_class,
             dq_match_records_main=dq_match_records_main,
+            guest_matches=guest_matches,
         )
 
 
@@ -428,6 +450,12 @@ def apply_user_merges(
                 new_matches.append(replace(m, winner_id=new_w, loser_id=new_l))
                 n_m += 1
         t.matches = new_matches
+        if getattr(t, 'guest_matches', None):
+            t.guest_matches = [m if (merges.get(m.winner_id, m.winner_id) == m.winner_id
+                                     and merges.get(m.loser_id, m.loser_id) == m.loser_id)
+                               else replace(m, winner_id=merges.get(m.winner_id, m.winner_id),
+                                            loser_id=merges.get(m.loser_id, m.loser_id))
+                               for m in t.guest_matches]
         # dq sets: rewrite
         for attr in ("dq_player_ids", "dq_player_ids_main", "dq_player_ids_class"):
             old_set = getattr(t, attr)

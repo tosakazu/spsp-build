@@ -59,6 +59,7 @@ from spsp.build import RunConfig, run_build  # noqa: E402
 from spsp.columnar import SHARED_UIDS, StrPerTourByLv, compact_str_table  # noqa: E402
 from spsp.overlay import V4Overlay  # noqa: E402
 from spsp.char_usage import compute_char_usage  # noqa: E402
+from spsp import guests as _guests  # noqa: E402
 from spsp.char_index import build_character_index  # noqa: E402
 from spsp.char_vote import apply_char_votes, load_votes  # noqa: E402
 
@@ -255,7 +256,7 @@ def _compute_class_bt_split(all_t, t_meta, bt_per_match):
         # 学習側の記録順 (= _bracket_order_key 順) で occurrence を対応付ける.
         # counter は class 以外の試合も進める (同 key に class/非class が混在しても整合).
         seen: dict = {}
-        for m in sorted(t.matches, key=_bracket_order_key):
+        for m in _guests.with_guests(t, _bracket_order_key):   # アカウントの無い相手との試合 (spsp/guests) も
             key = (eid, m.winner_id, m.loser_id)
             i = seen.get(key, 0)
             seen[key] = i + 1
@@ -267,8 +268,10 @@ def _compute_class_bt_split(all_t, t_meta, bt_per_match):
             if not isinstance(occs[0], (list, tuple)):
                 occs = [occs]  # 旧 flat 形式互換
             info = occs[i] if i < len(occs) else occs[-1]
-            _add(m.winner_id, eid, float(info[0]), bool(info[2]))
-            _add(m.loser_id, eid, float(info[1]), bool(info[3]))
+            if m.winner_id >= 0:
+                _add(m.winner_id, eid, float(info[0]), bool(info[2]))
+            if m.loser_id >= 0:
+                _add(m.loser_id, eid, float(info[1]), bool(info[3]))
     return split
 
 

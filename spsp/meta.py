@@ -16,6 +16,7 @@ from pathlib import Path
 import functools
 
 from spsp.skiplog import skipped
+from spsp import guests as _guests
 
 
 
@@ -396,7 +397,7 @@ def build_placements_seeds(all_tournaments):
         seeds_map = load_event_seeds(t.event_path)
         # 実際の勝ち (DQ の不戦勝は t.matches に入っていない)。勝ちが 0 なのに不戦勝で進んで SPR がプラスにならないように (2026-11-04)
         real_wins: dict = {}
-        for m in t.matches:
+        for m in _guests.with_guests(t):   # アカウントの無い相手に勝った試合も実際の勝ち
             real_wins[m.winner_id] = real_wins.get(m.winner_id, 0) + 1
         per_player: dict = {}
         for u, place in placements.items():

@@ -34,6 +34,7 @@ from spsp.meta import (
 )
 from spsp.overlay import json_roundtrip
 from spsp import tour_cache as _tour_cache
+from spsp import guests as _guests
 from spsp.columnar import (SHARED_UIDS, BtUsedView, GatedHist, MatchLog, MatchWins, PerTourByLv, PerTourLog,
                            PlayerMatches,
                            ScaledMap, TourHistory, TourMatchDeltas, TourUidTable, UidMap,
@@ -169,6 +170,8 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
         # 選手の対戦一覧の並びは、以前の「bt_per_match を記録の順に回す」順に戻す (seq = (組の位置 × 64 + 何回目か) × 2、
         # 敗者の行は +1: 同じ試合で勝者・敗者がどちらも初めて出るとき、以前と同じく勝者が先)
         rank = bt_per_match_v4.group_rank()
+        _guest_seq_base = (len(rank) + 1) * 64
+        _guest_seq = [0]
         match_id_deltas = TourMatchDeltas.empty()
         for t in all_tournaments:
             ms_t = list(t.matches)
@@ -181,7 +184,9 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
                 # (w, l) → [Match, ...] 進行順 (= 学習側の記録順と同じ _bracket_order_key 順)。
                 # 同一イベントで同方向の対戦が複数ある場合 (GF+リセット連取等) に occurrence を対応付ける。
                 local: dict = {}
-                for m in sorted(ms_t, key=_bracket_order_key):
+                # アカウントの無い相手との試合 (spsp/guests、その側の uid は負) も突き合わせる。大会ページ用の
+                # match_id_deltas は t.matches の分だけ (下の add_tournament)
+                for m in sorted(ms_t + list(_guests.of(t)), key=_bracket_order_key):
                     local.setdefault((m.winner_id, m.loser_id), []).append(m)
                 for (w_uid, l_uid), g in groups.items():
                     ms = local.get((w_uid, l_uid)) or []
@@ -196,8 +201,21 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
                         if m is not None:
                             d_t[id(m)] = (max(0.0, d_w), min(0.0, d_l), t_w, t_l)
                         mi = pm_table.add_match(m)
-                        pm_table.add(w_uid, ts, tid, l_uid, True,  max(0.0, d_w), is_cls, mi, t_w, seq=2 * (base + i))
-                        pm_table.add(l_uid, ts, tid, w_uid, False, min(0.0, d_l), is_cls, mi, t_l, seq=2 * (base + i) + 1)
+                        if w_uid >= 0:   # 負の uid (アカウントの無い参加者) の側の行は作らない
+                            pm_table.add(w_uid, ts, tid, l_uid, True,  max(0.0, d_w), is_cls, mi, t_w, seq=2 * (base + i))
+                        if l_uid >= 0:
+                            pm_table.add(l_uid, ts, tid, w_uid, False, min(0.0, d_l), is_cls, mi, t_l, seq=2 * (base + i) + 1)
+            # 学習に入れていないアカウント無しの相手との試合 (RATED_SINCE より前の大会・集計対象外の大会): 対戦一覧には
+            # 変動 0・直対に数えない試合として出す。並びの番号は学習の記録の後ろ
+            for m in sorted(_guests.of(t), key=_bracket_order_key):
+                if (m.winner_id, m.loser_id) in groups:
+                    continue
+                mi = pm_table.add_match(m)
+                _real, _opp, _won = ((m.loser_id, m.winner_id, False) if m.winner_id < 0
+                                     else (m.winner_id, m.loser_id, True))
+                pm_table.add(_real, tid_to_ts.get(id(t), 0), id(t), _opp, _won, 0.0, bool(m.is_class), mi, False,
+                             seq=2 * (_guest_seq_base + _guest_seq[0]))
+                _guest_seq[0] += 1
             match_id_deltas.add_tournament(t, ms_t, d_t)
         del rank
     else:
@@ -210,7 +228,7 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
         for t in all_tournaments:
             eid = t.event_id
             if eid is None: continue
-            for m in sorted(mats[id(t)], key=_bracket_order_key):
+            for m in sorted(mats[id(t)] + list(_guests.of(t)), key=_bracket_order_key):
                 eid_match_map.setdefault((eid, m.winner_id, m.loser_id), []).append(m)
         for (eid, w_uid, l_uid), occs in bt_per_match_v4.items():
             tid = eid_to_tid.get(eid)
@@ -229,13 +247,17 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
                     max(0.0, d_w), min(0.0, d_l), t_w, t_l)
                 if pm_table is not None:
                     mi = pm_table.add_match(m)
-                    pm_table.add(w_uid, ts, tid, l_uid, True,  max(0.0, d_w), is_cls, mi, t_w)
-                    pm_table.add(l_uid, ts, tid, w_uid, False, min(0.0, d_l), is_cls, mi, t_l)
+                    if w_uid >= 0:
+                        pm_table.add(w_uid, ts, tid, l_uid, True,  max(0.0, d_w), is_cls, mi, t_w)
+                    if l_uid >= 0:
+                        pm_table.add(l_uid, ts, tid, w_uid, False, min(0.0, d_l), is_cls, mi, t_l)
                     continue
-                if d_w > 0:
+                if d_w > 0 and w_uid >= 0:
                     match_wins[w_uid].append((tid, l_uid, d_w, m))
-                player_matches[w_uid].append((ts, tid, l_uid, True,  max(0.0, d_w), is_cls, m, t_w))
-                player_matches[l_uid].append((ts, tid, w_uid, False, min(0.0, d_l), is_cls, m, t_l))
+                if w_uid >= 0:
+                    player_matches[w_uid].append((ts, tid, l_uid, True,  max(0.0, d_w), is_cls, m, t_w))
+                if l_uid >= 0:
+                    player_matches[l_uid].append((ts, tid, w_uid, False, min(0.0, d_l), is_cls, m, t_l))
     if pm_table is not None:
         player_matches, match_wins = pm_table, MatchWins(pm_table)
     print(f"  player_matches: {'配列の表' if pm_table is not None else 'dict'} ({len(player_matches)} players)", flush=True)
