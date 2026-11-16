@@ -114,6 +114,9 @@ class Tournament:
     # 参加者の集合・人数・順位の母集団は matches と standings から作るので、そこに負の uid を混ぜないため。
     # 読むのは、直対評価の学習・勝敗数・選手のページの対戦一覧だけ (それぞれ明示的に足す)
     guest_matches: list[Match] = field(default_factory=list)
+    # その参加者の名前 (負の uid → 名前。取れているものだけ)。大会と一緒に持つ: build の段は読み込み直さず、snap の段が
+    # 書いた大会をそのまま使うので、モジュールの表に置くと名前が届かない (2026-11-16 に本番で空になった)
+    guest_names: dict[int, str] = field(default_factory=dict)
 
 
 def _load_json(path: Path) -> dict | None:
@@ -270,6 +273,7 @@ def iter_tournaments(
 
         matches: list[Match] = []
         guest_matches: list[Match] = []
+        guest_names: dict[int, str] = {}
         dq_player_ids: set[int] = set()
         dq_player_ids_main: set[int] = set()
         dq_player_ids_class: set[int] = set()
@@ -331,7 +335,8 @@ def iter_tournaments(
                         if gid is None:
                             continue
                         nm = m.get("winner_name" if wid is None else "loser_name")
-                        _guests.NAMES[gid] = nm if isinstance(nm, str) and nm else None
+                        if isinstance(nm, str) and nm:
+                            guest_names[gid] = nm
                         m = dict(m)
                         if wid is None:
                             wid = m["winner_id"] = gid
@@ -382,6 +387,7 @@ def iter_tournaments(
             dq_player_ids_class=dq_player_ids_class,
             dq_match_records_main=dq_match_records_main,
             guest_matches=guest_matches,
+            guest_names=guest_names,
         )
 
 
