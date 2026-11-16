@@ -6,7 +6,7 @@ matches.json では、その参加者の側の winner_id / loser_id が null で
 ここでは、その参加者を「その試合だけの選手」として読む (uid = -match_id、負の数)。大会の matches には入れず、
 Tournament.guest_matches に分けて持つ (参加者の集合・人数・順位の母集団に負の uid を混ぜないため)。読むのは
   - 直対評価の学習 (spsp/learner.g2_learn_advance): アカウントのある側だけを、初めて出た選手 (初期値) が相手として更新する。
-    無い側のレートはどこにも残さない (試合ごとに初期値)。RATED_SINCE 以降の大会だけ
+    無い側のレートはどこにも残さない (試合ごとに初期値)。RATED_SINCE 以降の大会 (既定は全期間)
   - 勝敗数 (spsp/score._TourOutcomes)・選手のページの対戦一覧 (spsp/build._v4_adapt_bt_outputs)・SPR の「実際の勝ち」(spsp/meta)
 だけ。相手の名前は matches.json の winner_name / loser_name (smash_database が
 アカウントの無い側だけ入れる。古いデータには無い) で、無ければ None (フロントが「アカウント未登録の参加者」と出す)。
@@ -21,11 +21,11 @@ import os
 
 ENABLED = os.environ.get('SPSP_GUEST_MATCHES', '1') != '0'
 
-# 直対評価に数え始める日 (JST、この日以降に始まった大会)。それより前の大会の試合は、表示 (対戦一覧・勝敗数) には出すが
-# 学習には入れない (レート変動 0・「直対に数えない試合」)。過去の大会まで数えると全員の順位がシーズン途中で動くため
-# (凍結データで試して上位 64 位のうち 14 人、全体の 9 割が動いた。2026-11-16)。
-# SPSP_GUEST_RATED_SINCE=YYYY-MM-DD で変えられる (検証用。本番は既定のまま)
-RATED_SINCE = os.environ.get('SPSP_GUEST_RATED_SINCE', '2026-11-15')
+# 直対評価に数え始める日 (JST、この日以降に始まった大会)。既定は全期間 (2026-11-16 ユーザー判断「遡って変わっていい」)。
+# 最初は 2026-11-15 以降だけにしていた (過去の大会まで数えると、凍結データで上位 64 位のうち 14 人・全体の 9 割の順位が
+# 少しずつ動くため)。それより前の大会の試合を表示だけにする仕組みは残してある (rated / build の「学習に入れていない試合」)。
+# SPSP_GUEST_RATED_SINCE=YYYY-MM-DD で変えられる (検証用)
+RATED_SINCE = os.environ.get('SPSP_GUEST_RATED_SINCE', '2000-01-01')
 RATED_SINCE_TS = int(_dt.datetime.fromisoformat(RATED_SINCE).replace(
     tzinfo=_dt.timezone(_dt.timedelta(hours=9))).timestamp())
 
