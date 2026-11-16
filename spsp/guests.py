@@ -29,8 +29,16 @@ RATED_SINCE = os.environ.get('SPSP_GUEST_RATED_SINCE', '2000-01-01')
 RATED_SINCE_TS = int(_dt.datetime.fromisoformat(RATED_SINCE).replace(
     tzinfo=_dt.timezone(_dt.timedelta(hours=9))).timestamp())
 
-# uid (負) → 名前 (無ければ None)。data_loader が大会を読むたびに足す
-NAMES: dict[int, str | None] = {}
+# uid (負) → 名前。大会の guest_names (data_loader が読む) を、書き出しの前に register で集める
+NAMES: dict[int, str] = {}
+
+
+def register(tournaments) -> None:
+    """大会が持っている名前を NAMES に集める (spsp/build が選手の対戦一覧を作る前に呼ぶ)。"""
+    for t in tournaments:
+        d = getattr(t, 'guest_names', None)
+        if d:
+            NAMES.update(d)
 
 
 def is_guest(uid) -> bool:

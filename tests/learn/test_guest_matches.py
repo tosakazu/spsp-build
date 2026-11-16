@@ -63,9 +63,21 @@ def test_display_name():
         G.NAMES.pop(-100, None); G.NAMES.pop(-101, None)
 
 
+def test_register_names_from_tournaments():
+    # build の段は大会を読み込み直さないので、名前は大会が持っている分から集める
+    t = _t(G.RATED_SINCE_TS + 3600, [_m(1, -555, 0)]); t.guest_names = {-555: 'ゆうき'}
+    bare = _t(0, []); del bare.guest_names
+    try:
+        G.register([t, bare])
+        assert format_display(None, -555) == 'ゆうき'
+    finally:
+        G.NAMES.pop(-555, None)
+
+
 if __name__ == '__main__':
     test_guest_uid()
     test_rated_only_since()
     test_digest_changes_only_when_rated()
     test_display_name()
+    test_register_names_from_tournaments()
     print('ok')

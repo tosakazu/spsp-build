@@ -120,6 +120,7 @@ def _v4_adapt_bt_outputs(all_tournaments, t_meta_by_id, snap_ts_list, inject):
 
     返り値: v2 prod learn_bt_gated_tour と同じ 12 タプル.
     """
+    _guests.register(all_tournaments)   # アカウントの無い相手の名前 (選手の対戦一覧の opp_display)
     bt_at_t_v4 = inject['bt_at_t']
     bt_timeline_v4 = inject['bt_timeline']
     bt_per_tour_v4 = inject['bt_per_tour']
