@@ -28,6 +28,7 @@ from pathlib import Path
 
 from spsp.columnar import AnchorTable, BtTimeline, MatchLog, PerTourLog, RatingHist
 from spsp.rolling import RollingState
+from spsp import guests as _guests
 
 
 def overseas_digest() -> str:
@@ -169,6 +170,8 @@ def tournament_digest(t, meta) -> str:
         repr((t.timestamp, rel_event_path(t.event_path), t.event_id, t.end_timestamp)),
         repr(tuple(t.standings)),
         _matches_repr(t.matches),
+        # アカウントの無い相手との試合のうち学習に入れる分 (spsp/guests.rated)。ある大会だけ足す (無い大会のハッシュは以前と同じ)
+        *((_matches_repr(list(_guests.rated(t))),) if _guests.rated(t) else ()),
         repr(tuple(sorted(getattr(t, 'dq_player_ids', ()) or ()))),
         repr(tuple(sorted(getattr(t, 'dq_player_ids_main', ()) or ()))),
         repr(tuple(sorted((k, repr(v)) for k, v in (meta or {}).items()))),

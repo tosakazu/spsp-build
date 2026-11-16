@@ -42,6 +42,7 @@ from spsp.meta import tournament_award_label, tournament_individual_label, load_
 from spsp.raters.openskill_rater import OpenSkillBTRater
 from spsp.tournament_utils import jjpr_point
 from spsp.rolling import rolling_raw_at
+from spsp import guests as _guests
 from spsp.columnar import GatedHist, TourHistory, TourUidTable
 from array import array
 
@@ -1406,7 +1407,7 @@ class _OutcomesAcc:
         self.per_tournament_dq_uids[tid] = set(t.dq_player_ids or [])
         self.per_tournament_dq_uids_main[tid] = set(getattr(t, 'dq_player_ids_main', None) or [])
         self.per_tournament_dq_uids_class[tid] = set(getattr(t, 'dq_player_ids_class', None) or [])
-        for m in t.matches:
+        for m in _guests.with_guests(t):   # アカウントの無い相手との試合も勝敗に数える (負の uid の分は誰も読まない)
             self.per_tournament_wins[tid][m.winner_id] += 1
             self.per_tournament_losses[tid][m.loser_id] += 1
             if bool(getattr(m, 'is_class', False)):

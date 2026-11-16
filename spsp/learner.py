@@ -74,6 +74,7 @@ from spsp.common import _rolling_lv2_raw_per_tour, level_tier_values
 from spsp.common import PEAK_ALLTIME_CUTOFF_DATE as _PEAK_CUTOFF_DATE
 _PEAK_CUTOFF_TS = int(dt.datetime(_PEAK_CUTOFF_DATE.year, _PEAK_CUTOFF_DATE.month, _PEAK_CUTOFF_DATE.day).timestamp())
 from spsp.rolling import placements_of
+from spsp import guests as _guests
 
 # per-tour 増分スコアの減衰基準日。順位は基準日に依存しない (全大会共通の係数) ので固定値でよい。
 # 2026-09-05 = 差分ビルド (チェックポイント再開) を入れたときの本番 eval_date。それ以前のビルドと
@@ -2492,6 +2493,8 @@ def g2_learn_advance(state: G2LearnState, prior, t_meta_by_id, M, until_ts: int 
         participants = set()
         for m in t.matches:
             participants.add(m.winner_id); participants.add(m.loser_id)
+        for m in _guests.rated(t):   # アカウントの無い相手との試合: アカウントのある側だけ参加者に数える
+            participants.add(m.loser_id if m.winner_id < 0 else m.winner_id)
         standings_uids = {uid for _, uid in t.standings}
         bt_at_t[id(t)] = {uid: _get(uid).rating / ELO_PER_UNIT
                           for uid in standings_uids | participants}
@@ -2638,14 +2641,17 @@ def g2_learn_advance(state: G2LearnState, prior, t_meta_by_id, M, until_ts: int 
                 print(f"      anchor_before={_anc.get(_DBG_UID)} measured={_DBG_UID in _pt_meas} "
                       f"pt_scores={ {lv: round(_pt_scores[lv].get(_DBG_UID, 0.0), 3) for lv in _pt_scores} } "
                       f"peak={_pt_peak.get(_DBG_UID) if not _PEAK_PW else None}", flush=True)
-        for m in sorted(t.matches, key=_bracket_order_key):
+        # アカウントの無い相手との試合 (spsp/guests、その側の uid は負) も進行順に混ぜる。その側は更新せず、
+        # レートは毎回初期値 (ratings に残さない)。参加者の集合 (participants) には入れない
+        for m in _guests.with_rated(t, _bracket_order_key):
             m_meta = meta
             if _BT_CLASS_GATE and getattr(m, 'is_class', False):
                 if meta_cls is None:
                     meta_cls = dict(meta); meta_cls['is_lower_class'] = True
                 m_meta = meta_cls
-            u_w = tournament_updates_player(m.winner_id, m_meta)
-            u_l = tournament_updates_player(m.loser_id, m_meta)
+            _g_w = m.winner_id < 0; _g_l = m.loser_id < 0
+            u_w = (not _g_w) and tournament_updates_player(m.winner_id, m_meta)
+            u_l = (not _g_l) and tournament_updates_player(m.loser_id, m_meta)
             wd_w = wd_l = False
             if _BT_LV3WD_K:
                 if (not u_w) and player_lv.get(m.winner_id, 1) == 3 \
@@ -2662,7 +2668,8 @@ def g2_learn_advance(state: G2LearnState, prior, t_meta_by_id, M, until_ts: int 
                 if _pm_on and eid is not None:
                     bt_per_match.add(eid, m.winner_id, m.loser_id, 0.0, 0.0, False, False)
                 continue
-            w = _get(m.winner_id); l = _get(m.loser_id)
+            w = _G2Player(rating=1500.0, rd=350.0, vol=0.06) if _g_w else _get(m.winner_id)
+            l = _G2Player(rating=1500.0, rd=350.0, vol=0.06) if _g_l else _get(m.loser_id)
             before_w = w.rating / ELO_PER_UNIT
             before_l = l.rating / ELO_PER_UNIT
             wr, wrd, lr, lrd = w.rating, w.rd, l.rating, l.rd
