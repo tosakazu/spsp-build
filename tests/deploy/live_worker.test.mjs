@@ -405,3 +405,49 @@ test("上限で手を付けられなかった部門には途中経過を置か�
   await runLive({ gql: fakeGql(tours, ev), store, now: NOW + 300 });
   assert.ok(!store.m.has("pending/100.json"));
 });
+
+test("選手ごとの小さいファイル: その人の試合・相手・未定の枠の前の試合だけ。小さい部門は分けない", async () => {
+  const { buildSlices, sliceCount, SLICE_MIN_ENTRANTS } = await import("../../deploy/live-worker/live.js");
+  const entrants = {};
+  for (let i = 1; i <= SLICE_MIN_ENTRANTS; i++) entrants[i] = { name: "p" + i, tag: "p" + i, uid: 1000 + i, seed: i };
+  const mk = (id, a, b, winner, pre = [null, null]) => ({ id, pg: 10, round: 1, ident: "A", e: [a, b], score: [null, null], winner, pre });
+  const sets = [mk(1, 1, 2, 1), mk(2, 3, 4, null), mk(3, 5, 6, null), mk(4, 1, null, null, [null, ["2", 1]]), mk(5, 7, 8, 7)];
+  const doc = { v: 3, event_id: 9, event_name: "E", phases: [{ id: 1, groups: [{ id: 10 }] }], entrants, sets, _sets_after: 5, updated_at: 7 };
+  const n = sliceCount(doc);
+  assert.equal(n, Math.ceil(SLICE_MIN_ENTRANTS / 48));
+  assert.equal(sliceCount({ entrants: { 1: { uid: 1 } } }), 0);
+  const slices = buildSlices(doc, n);
+  assert.equal(slices.length, n);
+  const sl = slices[1001 % n];   // p1 の分
+  assert.deepEqual(sl.slice, [n, 1001 % n]);
+  assert.equal(sl._sets_after, undefined);
+  assert.deepEqual(sl.phases, doc.phases);
+  const ids = sl.sets.map((x) => x.id);
+  assert.ok(ids.includes(1) && ids.includes(4), "自分の試合");
+  assert.ok(ids.includes(2), "相手が未定の枠の前の試合");
+  for (const id of [1, 2, 3, 4]) assert.ok(sl.entrants[id], "試合に出てくる参加者 " + id);
+  // どの人も自分の組に自分と自分の試合が入っている
+  for (const [id, e] of Object.entries(entrants)) {
+    const s2 = slices[e.uid % n];
+    assert.ok(s2.entrants[id]);
+    for (const st of sets) if (st.e.map(String).includes(id)) assert.ok(s2.sets.some((x) => x.id === st.id));
+  }
+});
+
+test("選手ごとの小さいファイルを書き、一覧に数を載せる。消えた部門の分は消す", async () => {
+  const { SLICE_MIN_ENTRANTS } = await import("../../deploy/live-worker/live.js");
+  const { tours, ev } = fixture();
+  for (let i = 0; i < SLICE_MIN_ENTRANTS; i++) ev.entrants.push(entrant(1000 + i, 5000 + i, 10 + i, "x" + i));
+  tours[0].events[0].numEntrants = ev.entrants.length;
+  const store = memStore();
+  await runLive({ gql: fakeGql(tours, ev), store, now: NOW });
+  const n = (await store.get("index.json")).events[0].slices;
+  assert.ok(n >= 2);
+  assert.equal([...store.m.keys()].filter((k) => k.startsWith("slices/100/")).length, n);
+  const sl = await store.get(`slices/100/${n}-0.json`);
+  assert.deepEqual(sl.slice, [n, 0]);
+  assert.ok(Object.keys(sl.entrants).length < ev.entrants.length);
+  // 部門が窓から外れたら消える
+  await runLive({ gql: fakeGql([], ev), store, now: NOW + 86400 });
+  assert.equal([...store.m.keys()].filter((k) => k.startsWith("slices/")).length, 0);
+});
