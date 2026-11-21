@@ -41,6 +41,12 @@ export const REFRESH_MAX_AGE_SEC = 290;  // 5 分ごとの回で毎回取り直�
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
 export const MAX_REQUESTS_PER_RUN = 70;
+// 選手ごとの小さいファイル (2026-11-21): 大きい部門 (篝火 = 1,500 人・3,000 セットで 1.4 MB) を丸ごと読むと、会場の回線では
+// 「参加中の大会」が出るまでが遅い。その選手の試合と相手だけを slices/<部門>/<n>-<k>.json に分けて書く (k = uid % n)。
+// 形は部門のファイルと同じ (entrants と sets がその組の人の分だけ、slice: [n, k])。n は一覧 (index.json) の summary.slices
+export const SLICE_MIN_ENTRANTS = 100;        // これより小さい部門は分けない (部門のファイルが小さい)
+export const SLICE_SIZE = 48;                 // 1 ファイルの人数の目安
+export const SLICE_CAND_DEPTH = 3;            // 相手が未定の枠の候補を、前の試合を何段たどって入れるか (画面の CAND_DEPTH と同じ)
 export const PENDING_MAX_SEC = 2 * 3600;      // 最初の取得の途中経過を続きに使う時間 (これより古ければ読み直す)
 
 export const STRUCT_VERSION = 1;
@@ -467,6 +473,45 @@ export async function updateEvent(gql, doc, ev, tour, now) {
   return doc;
 }
 
+/** その部門を何個に分けるか (0 = 分けない) */
+export function sliceCount(doc) {
+  const n = Object.values(doc?.entrants || {}).filter((e) => e.uid != null).length;
+  return n >= SLICE_MIN_ENTRANTS ? Math.ceil(n / SLICE_SIZE) : 0;
+}
+
+/** 選手ごとの小さいファイル n 個 (k 番目 = uid % n === k の人の分)。入れるもの: その人の試合、相手が未定の枠の前の試合
+ *  (SLICE_CAND_DEPTH 段)、それらに出てくる参加者。フェーズなど部門の情報はそのまま */
+export function buildSlices(doc, n) {
+  const { entrants = {}, sets = [], _sets_after, _init, ...head } = doc;
+  const byId = new Map(sets.map((x) => [String(x.id), x]));
+  const mine = new Map();   // 参加者 id → その人の試合
+  for (const st of sets) for (const id of st.e || []) if (id != null) (mine.get(String(id)) || mine.set(String(id), []).get(String(id))).push(st);
+  const out = Array.from({ length: n }, () => ({ ents: new Set(), sets: new Set() }));
+  const walk = (b, st, k, depth) => {   // 枠 k の前の試合を入れ、そこも未定ならさらに前へ
+    const pre = st.pre && st.pre[k];
+    const ps = pre ? byId.get(String(pre[0])) : null;
+    if (!ps || depth <= 0) return;
+    b.sets.add(String(ps.id));
+    (ps.e || [null, null]).forEach((id, j) => { if (id == null) walk(b, ps, j, depth - 1); });
+  };
+  for (const [id, e] of Object.entries(entrants)) {
+    if (e.uid == null || !Number.isFinite(Number(e.uid))) continue;
+    const b = out[Number(e.uid) % n];
+    b.ents.add(id);
+    for (const st of mine.get(id) || []) {
+      b.sets.add(String(st.id));
+      if (st.winner == null) (st.e || [null, null]).forEach((x, k) => { if (x == null) walk(b, st, k, SLICE_CAND_DEPTH); });
+    }
+  }
+  return out.map((b, k) => {
+    const ss = sets.filter((x) => b.sets.has(String(x.id)));
+    for (const st of ss) for (const id of st.e || []) if (id != null) b.ents.add(String(id));
+    const es = {};
+    for (const id of Object.keys(entrants)) if (b.ents.has(id)) es[id] = entrants[id];
+    return { ...head, slice: [n, k], entrants: es, sets: ss };
+  });
+}
+
 function lastActivity(ev, doc) {
   let t = ev.updatedAt || 0;
   for (const s of doc?.sets || []) t = Math.max(t, s.updated_at || 0);
@@ -478,6 +523,7 @@ function summary(doc, tour) {   // index.json の 1 件
     event_id: doc.event_id, event_name: doc.event_name, tournament_id: doc.tournament_id, tournament_name: doc.tournament_name,
     url: doc.url, tournament_url: doc.tournament_url, start_at: doc.start_at, num_entrants: doc.num_entrants,
     is_online: doc.is_online, image: tour?.images?.[0]?.url ?? null, ended: !!doc.ended_at, updated_at: doc.updated_at,
+    ...(sliceCount(doc) ? { slices: sliceCount(doc) } : {}),   // 選手ごとの小さいファイルの数 (あるときだけ)
   };
 }
 
@@ -593,6 +639,8 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     if (ending) doc.ended_at = now;
     if (!ending && now - lastActivity(ev, doc) > STALE_SEC) { stale[key] = now; continue; }   // 動きが無い ACTIVE (閉じ忘れ)
     await store.put(`events/${key}.json`, doc);
+    const nSlices = sliceCount(doc);
+    if (nSlices) for (const sl of buildSlices(doc, nSlices)) await store.put(`slices/${key}/${nSlices}-${sl.slice[1]}.json`, sl);
     written.push(doc);
     const uids = [...new Set(Object.values(doc.entrants).map((e) => e.uid).filter((u) => u != null).map(String))];
     next[key] = { tournament_id: t.id, updated_at: ev.updatedAt, refreshed_at: now, ...(ending ? { ended_at: now } : {}),
@@ -633,6 +681,12 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
   for (const k of (await store.list("pending/"))) {
     const id = k.replace(/^pending\//, "").replace(/\.json$/, "");
     if (!pending.has(id) && (next[id] || !waiting.has(id))) await store.del(k);
+  }
+  // 選手ごとの小さいファイル: 消えた部門の分と、分ける数が変わる前の分を消す
+  for (const k of (await store.list("slices/"))) {
+    const [, id, name = ""] = k.split("/");
+    const n = next[id]?.summary?.slices;
+    if (!n || !name.startsWith(`${n}-`)) await store.del(k);
   }
   // 窓から外れた・ENDED_KEEP_SEC を過ぎた部門は消す
   for (const k of (await store.list("events/"))) {

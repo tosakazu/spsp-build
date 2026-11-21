@@ -11,7 +11,7 @@ const store = {
   async get(k) { try { return JSON.parse(fs.readFileSync(path.join(dir, k), "utf8")); } catch { return null; } },
   async put(k, v) { const f = path.join(dir, k); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)); },
   async del(k) { fs.rmSync(path.join(dir, k), { force: true }); },
-  async list(sub) { try { return fs.readdirSync(path.join(dir, sub)).map((f) => sub + f); } catch { return []; } },
+  async list(sub) { try { return fs.readdirSync(path.join(dir, sub), { recursive: true, withFileTypes: true }).filter((d) => d.isFile()).map((d) => path.relative(dir, path.join(d.parentPath, d.name))); } catch { return []; } },
 };
 const t0 = Date.now();
 const r = await runLive({ gql: makeGql({ token, log: console.log }), store, countryCode: cc, log: console.log });
