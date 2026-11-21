@@ -41,6 +41,7 @@ export const REFRESH_MAX_AGE_SEC = 290;  // 5 分ごとの回で毎回取り直�
 export const ENDED_KEEP_SEC = 3600;            // ACTIVE でなくなってから残す時間 (通常の取得・ビルドに載るまでのつなぎ)
 export const SET_CURSOR_MARGIN_SEC = 120;      // セットの続きは少し前から読み直す (時計のずれ)
 export const MAX_REQUESTS_PER_RUN = 70;
+export const PENDING_MAX_SEC = 2 * 3600;      // 最初の取得の途中経過を続きに使う時間 (これより古ければ読み直す)
 
 export const STRUCT_VERSION = 1;
 export const STRUCT_KEEP_SEC = 10 * 86400;    // 構造を残す期間 (結果報告の受付は最長 8 日)
@@ -193,27 +194,31 @@ function isComplexityError(body) {
   return (body?.errors || []).some((e) => /complexity/i.test(e.message || ""));
 }
 
-// ページを全部たどる (path = data からのキー列)。複雑すぎると言われたら perPage を半分にしてその位置から続ける
-export async function fetchAllNodes(gql, query, variables, path, perPage) {
-  const out = [];
-  let per = perPage;
-  for (let page = 1; ; ) {
-    const body = await gql(query, { ...variables, page, perPage: per });
-    if (isComplexityError(body) && per > 2) {
-      const done = (page - 1) * per;
-      per = Math.max(2, Math.floor(per / 2));
-      page = Math.floor(done / per) + 1;
-      out.length = (page - 1) * per;
+// ページを全部たどる (path = data からのキー列)。複雑すぎると言われたら perPage を半分にしてその位置から続ける。
+// st = 途中の状態 { page, per, out, done } (渡せばその場で書き換える)。1 回の上限 (BudgetExceeded) で止まっても、同じ st を渡せば
+// 続きから読む (大きい部門の最初の取得を何回かに分ける)。map = 1 件を残す形に直す (out に持つのはその結果)
+export async function fetchAllNodes(gql, query, variables, path, perPage, st = {}, map = null) {
+  st.out ||= [];
+  st.per ||= perPage;
+  st.page ||= 1;
+  if (st.done) return st.out;
+  for (;;) {
+    const body = await gql(query, { ...variables, page: st.page, perPage: st.per });
+    if (isComplexityError(body) && st.per > 2) {
+      const done = (st.page - 1) * st.per;
+      st.per = Math.max(2, Math.floor(st.per / 2));
+      st.page = Math.floor(done / st.per) + 1;
+      st.out.length = (st.page - 1) * st.per;
       continue;
     }
     let conn = body?.data;
     for (const k of path) conn = conn?.[k];
     if (!conn) throw new FetchError(`${path.join(".")}: ${JSON.stringify(body?.errors || body).slice(0, 300)}`);
     const nodes = conn.nodes || [];
-    out.push(...nodes);
+    st.out.push(...(map ? nodes.map(map) : nodes));
     const totalPages = conn.pageInfo?.totalPages || 1;
-    if (!nodes.length || page >= totalPages) return out;
-    page++;
+    if (!nodes.length || st.page >= totalPages) { st.done = true; return st.out; }
+    st.page++;
   }
 }
 
@@ -236,8 +241,8 @@ async function fetchPhases(gql, eid) {
     }));
 }
 
-async function fetchEntrants(gql, eid) {
-  const nodes = await fetchAllNodes(gql, ENTRANTS_QUERY, { eid }, ["event", "entrants"], 100);
+async function fetchEntrants(gql, eid, st) {
+  const nodes = await fetchAllNodes(gql, ENTRANTS_QUERY, { eid }, ["event", "entrants"], 100, st);
   const out = {};
   for (const n of nodes) {
     const parts = n.participants || [];
@@ -280,8 +285,8 @@ export function setRecord(s) {
   };
 }
 
-async function fetchStandings(gql, eid) {
-  const nodes = await fetchAllNodes(gql, STANDINGS_QUERY, { eid }, ["event", "standings"], 100);
+async function fetchStandings(gql, eid, st) {
+  const nodes = await fetchAllNodes(gql, STANDINGS_QUERY, { eid }, ["event", "standings"], 100, st);
   const out = {};
   for (const n of nodes) if (n.entrant?.id != null) out[String(n.entrant.id)] = [n.placement ?? null, !!n.isFinal];
   return out;
@@ -435,23 +440,28 @@ export function bracketLabels(doc) {
   for (const s of doc.sets || []) if (s.winner == null) s.label = label(s, true);
 }
 
-// ACTIVE の部門を 1 つ取り直す (doc = 前回の出力か空のもの。その場で書き換える)
+// ACTIVE の部門を 1 つ取り直す (doc = 前回の出力か空のもの。その場で書き換える)。
+// 最初の取得 (全員・全セット・順位) は大きい部門 (2,000 人規模) だと 1 回の上限に収まらない。途中の状態を doc._init に持ち、
+// BudgetExceeded で止まったら呼び出し側がそれを pending/ に置いて次の回に続きから読む (2026-11-21、篝火 #16 が載らなかった)。
+// 何回かに分けて読む間に動いたセットは、読み終えた次の回が「読み始めの時刻より後」を読み直して拾う (_sets_after = 読み始め)
 export async function updateEvent(gql, doc, ev, tour, now) {
   const first = !doc.entrants || doc.v !== DOC_VERSION;
+  const init = first ? (doc._init ||= { at: now, ent: {}, sets: {}, std: {} }) : null;
   const phases = await fetchPhases(gql, ev.id);
-  const entrants = first || Object.keys(doc.entrants).length !== (ev.numEntrants || 0) ? await fetchEntrants(gql, ev.id) : doc.entrants;
+  const entrants = first || Object.keys(doc.entrants).length !== (ev.numEntrants || 0) ? await fetchEntrants(gql, ev.id, init?.ent) : doc.entrants;
   const cursor = doc._sets_after;
   const after = first || cursor == null ? null : Math.max(0, cursor - SET_CURSOR_MARGIN_SEC);
-  const fresh = (await fetchAllNodes(gql, SETS_QUERY, { eid: ev.id, after }, ["event", "sets"], 40)).map(setRecord);
-  const standings = await fetchStandings(gql, ev.id);
+  const fresh = await fetchAllNodes(gql, SETS_QUERY, { eid: ev.id, after }, ["event", "sets"], 40, init?.sets, setRecord);
+  const standings = await fetchStandings(gql, ev.id, init?.std);
   const sets = mergeSets(first ? [] : doc.sets, fresh);
+  delete doc._init;
   Object.assign(doc, {
     v: DOC_VERSION, event_id: ev.id, event_name: ev.name, tournament_id: tour.id, tournament_name: tour.name,
     url: "https://www.start.gg/" + (ev.slug || ""), tournament_url: "https://www.start.gg" + (tour.url || ""),
     start_at: ev.startAt ?? null, num_entrants: ev.numEntrants ?? null, is_online: ev.isOnline ?? null,
     state: ev.state, phases, entrants,
     sets,
-    _sets_after: now, updated_at: now,
+    _sets_after: init ? init.at : now, updated_at: now,
   });
   applyStandings(doc, standings);
   return doc;
@@ -535,6 +545,7 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
   const work = [];
   let failed = 0;
   let deferred = 0;
+  const pending = new Set();   // 最初の取得が途中の部門 (pending/<id>.json を残す)
 
   for (const t of tours) {
     for (const ev of t.events || []) {
@@ -562,11 +573,18 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     const { key, ev, t, p, ending } = w;
     const unchanged = p && p.updated_at === ev.updatedAt && now - (p.refreshed_at || 0) < REFRESH_MAX_AGE_SEC;
     if (unchanged && !ending) { next[key] = p; continue; }
-    let doc = (p && (await store.get(`events/${key}.json`))) || {};
+    // 最初の取得が途中のもの (pending/) があれば続きから。終わった部門 (ending) は続けない
+    let doc = (p && (await store.get(`events/${key}.json`))) || (!p && !ending && (await store.get(`pending/${key}.json`))) || {};
+    if (doc._init && now - (doc._init.at || 0) > PENDING_MAX_SEC) doc = {};   // 古すぎる途中経過は捨てて読み直す
     try {
       await updateEvent(gql, doc, ev, t, now);
     } catch (e) {
-      if (e instanceof BudgetExceeded) { deferred++; if (p) next[key] = p; continue; }
+      if (e instanceof BudgetExceeded) {
+        deferred++;
+        if (p) next[key] = p;
+        else if (doc._init?.ent?.out || doc._init?.sets?.out) { await store.put(`pending/${key}.json`, doc); pending.add(key); log(`${t.name} / ${ev.name}: first fetch continues next run (sets ${doc._init.sets?.out?.length || 0})`); }
+        continue;
+      }
       failed++;
       log(`${t.name} / ${ev.name}: ${e.message}`);
       if (p) next[key] = p;
@@ -608,6 +626,13 @@ export async function runLive({ gql, store, countryCode = "JP", now = Math.floor
     await store.del(`struct/${pg}.json`);
     delete structRec[pg];
     if (!Object.values(structRec).some((x) => x.eid === r.eid)) await store.del(`struct/e${r.eid}.json`);
+  }
+  // 途中経過のうち、今回続きを置かなかったもの (読み終えた・ACTIVE でなくなった) は消す。
+  // 上限で順番が回ってこなかった部門 (work にあるが触れていない) の分は残す
+  const waiting = new Set(work.map((w) => w.key));
+  for (const k of (await store.list("pending/"))) {
+    const id = k.replace(/^pending\//, "").replace(/\.json$/, "");
+    if (!pending.has(id) && (next[id] || !waiting.has(id))) await store.del(k);
   }
   // 窓から外れた・ENDED_KEEP_SEC を過ぎた部門は消す
   for (const k of (await store.list("events/"))) {
