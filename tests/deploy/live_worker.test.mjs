@@ -368,3 +368,40 @@ test("構造: 仮の id (開始前) のブロックは取らない", async () =>
   assert.ok(!g.calls.some((c) => /Struct/.test(c[0])));
   assert.equal(await store.get("struct/10.json"), null);
 });
+
+test("最初の取得が 1 回の上限に収まらない部門は、途中経過を pending/ に置いて次の回に続きから読む", async () => {
+  const { tours, ev } = fixture();
+  const store = memStore();
+  // 1 回目: 一覧・フェーズ・参加者まで (セットの前で上限)
+  const g1 = fakeGql(tours, ev, { budget: 3 });
+  const r1 = await runLive({ gql: g1, store, now: NOW });
+  assert.equal(r1.deferred, 1);
+  assert.equal(r1.events, 0);
+  assert.ok(store.m.has("pending/100.json"), "途中経過を置く");
+  assert.equal((await store.get("index.json")).events.length, 0);
+  // 2 回目: 参加者は読み直さず、セットと順位を読んで載せる。途中経過は消す
+  const g2 = fakeGql(tours, ev);
+  const r2 = await runLive({ gql: g2, store, now: NOW + 300 });
+  assert.equal(r2.events, 1);
+  assert.ok(!g2.calls.some(([n]) => n === "LiveEntrants"), "参加者は続きから (読み直さない)");
+  assert.ok(g2.calls.some(([n, v]) => n === "LiveSets" && v.after == null));
+  assert.ok(!store.m.has("pending/100.json"));
+  const doc = await store.get("events/100.json");
+  assert.equal(doc._init, undefined);
+  assert.equal(doc._sets_after, NOW, "次の回は読み始めの時刻より後のセットを読み直す");
+  assert.equal(Object.keys(doc.entrants).length, ev.entrants.length);
+  assert.equal(doc.sets.length, ev.sets.length);
+});
+
+test("上限で手を付けられなかった部門には途中経過を置かない・ACTIVE でなくなった部門の途中経過は消す", async () => {
+  const { tours, ev } = fixture();
+  const store = memStore();
+  const r0 = await runLive({ gql: fakeGql(tours, ev, { budget: 1 }), store, now: NOW });   // 一覧だけで上限
+  assert.equal(r0.deferred, 1);
+  assert.ok(!store.m.has("pending/100.json"));
+  await runLive({ gql: fakeGql(tours, ev, { budget: 3 }), store, now: NOW });
+  assert.ok(store.m.has("pending/100.json"));
+  tours[0].events[0].state = "COMPLETED";
+  await runLive({ gql: fakeGql(tours, ev), store, now: NOW + 300 });
+  assert.ok(!store.m.has("pending/100.json"));
+});
